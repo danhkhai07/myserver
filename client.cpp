@@ -22,7 +22,7 @@ int main(){
     std::string message;
     for (;;){
         std::cout << "Message to server: ";
-        std::cin >> message;
+        std::getline(std::cin, message);
         send(clientSocket, message.c_str(), message.size() + 1, 0);
     }
 
