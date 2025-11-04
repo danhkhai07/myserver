@@ -6,7 +6,6 @@
 #include <unistd.h>
 
 int main(){
-    //std::cout << "Hello world\n";
     int serverSocket = socket(AF_INET, SOCK_STREAM, 0);   
 
     sockaddr_in serverAddress;
@@ -17,12 +16,12 @@ int main(){
     if (bind(serverSocket, (struct sockaddr*)&serverAddress, sizeof(serverAddress)) < 0) {
 	    perror("Bind failed");
 	    return 1;
-}
+    }
 
 	if (listen(serverSocket, 5) < 0) {
-    perror("Listen failed");
-    return 1;
-}
+        perror("Listen failed");
+        return 1;
+    }
 
     int clientSocket = accept(serverSocket, nullptr, nullptr);
     std::cout << "Client connected!\n";
