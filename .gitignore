@@ -2,3 +2,6 @@
 /password.txt
 /savetobackup.sh
 /.clangd
+
+/server
+/client
