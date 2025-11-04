@@ -23,7 +23,8 @@ int main(){
     char buffer[1024];
     while (buffer != "EOC"){
         recv(clientSocket, buffer, strlen(buffer), 0);
-        std::cout << "Message from client: " << buffer << std::endl;
+        //std::cout << "Message from client: " << buffer << std::endl;
+        std::cout << buffer << std::endl;
     }
 
     close(serverSocket);

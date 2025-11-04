@@ -22,6 +22,7 @@ int main(){
     std::string message;
     while (message != "EOC"){
         std::cout << "Message to server: ";
+        std::cin >> message;
         send(clientSocket, message.c_str(), message.size() + 1, 0);
     }
 
