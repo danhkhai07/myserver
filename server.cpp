@@ -1,5 +1,5 @@
 #include <iostream>
-#include <string>
+#include <cstring>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -18,12 +18,11 @@ int main(){
     listen(serverSocket, 5);
 
     int clientSocket = accept(serverSocket, nullptr, nullptr);
+    std::cout << "Client connected!\n";
 
-    std::string buffer;
-    buffer.resize(1024);
+    char buffer[1024];
     while (buffer != "EOC"){
-        int bytes = recv(clientSocket, buffer.data(), buffer.size(), 0);
-        buffer.resize(bytes);
+        recv(clientSocket, buffer, strlen(buffer), 0);
         std::cout << "Message from client: " << buffer << std::endl;
     }
 

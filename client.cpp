@@ -6,7 +6,7 @@
 #include <unistd.h>
 
 int main(){
-    //std::cout << "Hello world\n";
+    std::cout << "Note: Send 'EOC' to end conversation.\n";
     int clientSocket = socket(AF_INET, SOCK_STREAM, 0);   
 
     sockaddr_in serverAddress;
@@ -14,11 +14,15 @@ int main(){
     serverAddress.sin_port = htons(8080);
     serverAddress.sin_addr.s_addr = inet_addr("36.50.55.225");
 
-    connect(clientSocket, (struct sockaddr*)&serverAddress, sizeof(serverAddress));
+    if (connect(clientSocket, (struct sockaddr*)&serverAddress, sizeof(serverAddress))){
+        std::cout << "Connection failed!\n";
+        return 1;
+    }
 
     std::string message;
     while (message != "EOC"){
-        send(clientSocket, message.c_str(), message.size(), 0);
+        std::cout << "Message to server: ";
+        send(clientSocket, message.c_str(), message.size() + 1, 0);
     }
 
     close(clientSocket);
