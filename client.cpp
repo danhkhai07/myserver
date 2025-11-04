@@ -16,9 +16,10 @@ int main(){
 
     connect(clientSocket, (struct sockaddr*)&serverAddress, sizeof(serverAddress));
 
-    const char* message = "Hi server!";
-    send(clientSocket, message, strlen(message), 0);
+    std::string message;
+    while (message != "EOC"){
+        send(clientSocket, message.c_str(), message.size(), 0);
+    }
 
     close(clientSocket);
-
 }
