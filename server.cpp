@@ -24,7 +24,9 @@ int main(){
     while (buffer != "EOC"){
         recv(clientSocket, buffer, strlen(buffer), 0);
         //std::cout << "Message from client: " << buffer << std::endl;
-        std::cout << buffer << std::endl;
+        if (&buffer[strlen(buffer)-1] == "\0") {
+            std::cout << buffer << std::endl;
+        }
     }
 
     close(serverSocket);
