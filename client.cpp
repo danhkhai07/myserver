@@ -22,7 +22,6 @@ void receiveMessage(int fd){
 }
 
 int main(){
-    std::cout << "Note: Send 'EOC' to end conversation.\n";
     int clientSocket = socket(AF_INET, SOCK_STREAM, 0);   
 
     sockaddr_in serverAddress;
@@ -30,10 +29,11 @@ int main(){
     serverAddress.sin_port = htons(PORT);
     serverAddress.sin_addr.s_addr = inet_addr("36.50.55.225");
 
-    if (connect(clientSocket, (struct sockaddr*)&serverAddress, sizeof(serverAddress))){
+    if (connect(clientSocket, (struct sockaddr*)&serverAddress, sizeof(serverAddress)) < 0){
         std::cout << "Connection failed!\n";
         return 1;
     }
+    std::cout << "Connection succeeded!\n";
 
     std::cout << "> ";
     std::thread t(receiveMessage, clientSocket);
