@@ -11,7 +11,7 @@ int main(){
 
     sockaddr_in serverAddress;
     serverAddress.sin_family = AF_INET;
-    serverAddress.sin_port = htons(8080);
+    serverAddress.sin_port = htons(1234);
     serverAddress.sin_addr.s_addr = inet_addr("36.50.55.225");
 
     if (connect(clientSocket, (struct sockaddr*)&serverAddress, sizeof(serverAddress))){
