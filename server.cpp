@@ -31,6 +31,12 @@ int main(){
         return 1;
     }
 
+    int opt = 1;
+    if (setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt(SO_REUSEADDR) failed");
+        exit(1);
+    }
+
     if (listen(serverSocket, 5) < 0){
         perror("Listen failed");
         return 1;
