@@ -79,6 +79,7 @@ int main(){
             if (fds[i].revents & POLLIN){
                 char buffer[1024];
                 int bytes = recv(fds[i].fd, buffer, sizeof(buffer), 0);
+                buffer[bytes] = '\0';
 
                 if (bytes <= 0){
                     std::cout << "Client " << fds[i].fd << " disconnected.\n";

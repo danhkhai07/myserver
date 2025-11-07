@@ -16,8 +16,9 @@ void receiveMessage(int fd){
     char buffer[1024];
     for (;;){
         int bytes = recv(fd, buffer, sizeof(buffer), 0);
-        if (bytes <= 0) return; buffer[bytes] = '\0';
-
+        if (bytes <= 0) return; 
+        buffer[bytes] = '\0';
+ 
         std::cout << "\r" << buffer << "\n";
         std::cout << "> " << std::flush;
     }
@@ -43,7 +44,7 @@ int main(){
     std::cout << "> ";
     std::string message;
     while (std::getline(std::cin, message)){
-        send(clientSocket, message.data(), message.size(), 0);
+        send(clientSocket, message.c_str(), message.size(), 0);
         std::cout << "\033[A\033[K> ";
     }
 
