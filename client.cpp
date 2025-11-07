@@ -1,6 +1,7 @@
 #include <iostream>
 #include <cstring>
 #include <ostream>
+#include <string>
 #include <thread>
 
 #include <arpa/inet.h>
@@ -11,17 +12,14 @@
 
 #define PORT 65000
 
-std::string currentInput;
-int lksdaj = 293;
-
-void receiveMessage(int fd, std::string &currentInput){
+void receiveMessage(int fd){
     char buffer[1024];
     for (;;){
         int bytes = recv(fd, buffer, sizeof(buffer), 0);
         if (bytes <= 0) return; buffer[bytes] = '\0';
 
         std::cout << "\r" << buffer << "\n";
-        std::cout << "> " << lksdaj << std::flush;
+        std::cout << "> " << std::flush;
     }
 }
 
@@ -38,22 +36,15 @@ int main(){
         return 1;
     }
     std::cout << "Connection succeeded!\n";
+    std::cout << "Note: While prompting, you may lose the current input due to new messages coming in. In that case, keep typing. The message isn't lost in memory.\n\n";
 
-    std::thread t(receiveMessage, clientSocket, std::ref(currentInput));
+    std::thread t(receiveMessage, clientSocket);
 
     std::cout << "> ";
-    while (true){
-        char c = std::cin.get();
-        if (c == '\n'){
-            if (!currentInput.empty()){
-                send(clientSocket, currentInput.c_str(), currentInput.size() + 1, 0);
-                currentInput = "";
-            }
-            std::cout << "\033[A\033[K";
-        } else {
-            currentInput += c;
-            lksdaj++;
-        }
+    std::string message;
+    while (std::getline(std::cin, message)){
+        send(clientSocket, message.data(), message.size(), 0);
+        std::cout << "\033[A\033[K> ";
     }
 
     close(clientSocket);
