@@ -104,6 +104,10 @@ public:
     }
 };
 
+struct Client {
+    std::string name;
+};
+
 int main() {
     TCPParser parser;
 
@@ -141,7 +145,6 @@ int main() {
         for (int i = 0; i < nfds; i++) {
             int fd = events[i].data.fd;
 
-            // New client
             if (fd == serverFd) {
                 int clientFd = accept(serverFd, nullptr, nullptr);
                 setNonBlocking(clientFd);
@@ -151,15 +154,14 @@ int main() {
                 continue;
             }
 
-            // Client disconnected
             if (events[i].events & EPOLLRDHUP) {
+                std::cout << "Client " << fd << " disconnected.\n";
                 close(fd);
                 parser.openMessageQueue.erase(fd);
                 parser.epollOutFlags.erase(fd);
                 continue;
             }
 
-            // Readable
             if (events[i].events & EPOLLIN) {
                 char buffer[PACKET_SIZE];
                 int bytes = read(fd, buffer, sizeof(buffer));
@@ -167,7 +169,6 @@ int main() {
                 parser.process_msg(fd, buffer, bytes);
             }
 
-            // Writable
             if (events[i].events & EPOLLOUT) {
                 auto& queue = parser.openMessageQueue[fd];
                 while (!queue.empty()) {
@@ -182,7 +183,6 @@ int main() {
             }
         }
 
-        // Update EPOLLOUT flags
         for (auto& kv : parser.openMessageQueue) {
             bool wantOut = !kv.second.empty();
             if (wantOut != parser.epollOutFlags[kv.first]) {
