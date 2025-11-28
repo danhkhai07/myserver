@@ -87,15 +87,6 @@ public:
         for (size_t i = 0; i < packet.size(); ++i){
             char c = packet[i];
             if (buf->lenParsed < MSG_LEN_BYTES){
-                if (c < '0' || c > '9'){
-                    if (!caughtNonNumberLen){
-                        std::cout << "PacketParser::feed: Cannot take a non-number byte for message len. Dropping until catching numbers.\n";
-                        buf->len = 0;
-                        buf->lenParsed = 0;
-                        caughtNonNumberLen = true;
-                    }
-                    continue;
-                } 
                 caughtNonNumberLen = false;
                 buf->len = buf->len*10 + c - '0';
                 buf->lenParsed++;
