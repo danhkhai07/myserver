@@ -287,12 +287,12 @@ namespace handler {
 }
 
 int main(int argc, char** argv){
-    if (sizeof(argv) < 2) {
+    if (argc < 2) {
         std::cout << "Usage: " << argv[0] << " [PORT]\n";
         return -1;
     }
 
-    if (sizeof(argv) > 2) {
+    if (argc > 2) {
         std::cout << "Error: Too many arguments.\n";
         std::cout << "Usage: " << argv[0] << " [PORT]\n";
         return -1;
