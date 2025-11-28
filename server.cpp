@@ -83,11 +83,9 @@ public:
         }
         buf = &buffers[owner].back();
 
-        bool caughtNonNumberLen = false;
         for (size_t i = 0; i < packet.size(); ++i){
             char c = packet[i];
             if (buf->lenParsed < MSG_LEN_BYTES){
-                caughtNonNumberLen = false;
                 buf->len = buf->len*10 + c - '0';
                 buf->lenParsed++;
                 if (buf->lenParsed >= MSG_LEN_BYTES){
