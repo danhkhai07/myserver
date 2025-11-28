@@ -202,7 +202,7 @@ public:
 
         epfd = epoll_create1(0);
         epoll_event tmp_ev;    
-        tmp_ev.events = EPOLLIN | EPOLLRDHUP;
+        tmp_ev.events = EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR;
         tmp_ev.data.fd = serverFd;
         epoll_ctl(epfd, EPOLL_CTL_ADD, serverFd, &tmp_ev);
 
@@ -229,7 +229,7 @@ public:
                     continue;
                 }
 
-                tmp_ev.events = EPOLLIN | EPOLLRDHUP;
+                tmp_ev.events = EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR;
                 tmp_ev.data.fd = clientFd;
                 epoll_ctl(epfd, EPOLL_CTL_ADD, clientFd, &tmp_ev);
                 std::cout << "IP " << clientIPv4 << " connected through fd number " << clientFd << ".\n";
@@ -240,8 +240,7 @@ public:
                 buffer.resize(BUF_SIZE);
                 size_t bytes = read(fd, buffer.data(), buffer.size());
 
-                if (bytes <= 0) continue;
-                Parser.feed(fd, buffer);
+                if (bytes > 0) Parser.feed(fd, buffer);
             }
 
             if (events[i].events & EPOLLOUT){
@@ -252,7 +251,7 @@ public:
                 if (buffer->offset >= buffer->msg.size()) sendQueue[fd].pop();
             }
 
-            if (events[i].events & EPOLLRDHUP){
+            if (events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)){
                 cleanUp(fd);
                 std::cout << "Client at fd number " << fd << " disconnected.\n";
             }
