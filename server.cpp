@@ -209,7 +209,7 @@ public:
 
     int process(){
         epoll_event tmp_ev;
-        int nfds = epoll_wait(epfd, events, MAX_CLIENTS + 1, 0);
+        int nfds = epoll_wait(epfd, events, MAX_CLIENTS, 0);
 
         for (int i = 0; i < nfds; ++i){
             int fd = events[i].data.fd;
@@ -236,7 +236,7 @@ public:
                 std::string buffer;
                 buffer.resize(BUF_SIZE);
                 size_t bytes = read(fd, buffer.data(), buffer.size());
-                buffer.resize(bytes + 1);
+                buffer.resize(bytes);
 
                 if (bytes > 0) Parser.feed(fd, buffer);
             }
