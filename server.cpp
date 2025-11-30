@@ -383,6 +383,7 @@ int main(int argc, char** argv){
     while(true){
         server.process();
         std::unique_ptr<container::Request> req;
+        std::cout << server.canGet() << '\n';
         if (server.canGet()){
             std::cout << "Passed canGet()\n";
             server.getRequest(req);
