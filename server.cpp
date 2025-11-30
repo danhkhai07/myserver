@@ -229,6 +229,18 @@ public:
                 std::string buffer;
                 buffer.resize(BUF_SIZE);
                 size_t bytes = read(fd, buffer.data(), buffer.size());
+                if (bytes <= 0) {
+                    if (bytes == 0) {
+                        // connection closed
+                        closeClient(fd);
+                        std::cout << "Client at fd number " << fd << " disconnected.\n";
+                    } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                        // real error
+                        closeClient(fd);
+                        std::cout << "Read error on fd " << fd << "\n";
+                    }
+                    continue;
+                }
                 buffer.resize(bytes);
 
                 if (bytes > 0) parser.feed(fd, buffer);
