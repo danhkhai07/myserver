@@ -236,7 +236,7 @@ public:
                 std::string buffer;
                 buffer.resize(BUF_SIZE);
                 size_t bytes = read(fd, buffer.data(), buffer.size());
-                buffer.resize(bytes);
+                buffer.resize(bytes + 1);
 
                 if (bytes > 0) Parser.feed(fd, buffer);
             }
