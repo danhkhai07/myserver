@@ -69,26 +69,20 @@ private:
         uint8_t opParsed = 0;
         uint8_t opcode = 0;
         std::string raw;
-        bool doneParsed = false;
-
-        void reset(){
-            *this = Buffer();
-        }
     };
 
-    // pair fd & num of completed bufs
-    std::unordered_map<int, int> completedNBufs;
+    std::queue<std::unique_ptr<container::Request>> completedPackets;
     std::unordered_map<int, std::deque<Buffer>> buffers;
 
 public:
     int feed(int owner, std::string_view packet){
         Buffer* buf;
-        if (buffers[owner].empty() || buffers[owner].back().doneParsed){
+        if (buffers[owner].empty()){
             buffers[owner].push_back(Buffer());
         }
         buf = &buffers[owner].back();
 
-        for (size_t i = 0; i < packet.size(); ++i){
+        for (int i = 0; i < packet.size(); ++i){
             char c = packet[i];
             // parse opcode
             if (buf->opParsed < 1){
@@ -114,8 +108,9 @@ public:
             buf->len--;
                 
             if (buf->len == 0){
-                buf->doneParsed = true;
-                completedNBufs[owner]++;
+                completedPackets.push(std::make_unique<container::Request>(owner, buf->opcode, buf->raw));
+                buffers[owner].pop_front();
+
                 if (i + 1 < packet.size()){
                     buffers[owner].push_back(Buffer());
                     buf = &buffers[owner].back();
@@ -126,32 +121,25 @@ public:
         return 0;
     }
 
-    bool empty(int owner){
-        return (completedNBufs[owner] == 0);
-    } 
-
-    int getRequest(int owner, std::unique_ptr<container::Request> &result){
-        if (buffers[owner].empty()){
+    int getRequest(std::unique_ptr<container::Request> &result){
+        if (completedPackets.empty()){
             std::cout << "PacketParser::getRequest: Bad call: Queue is empty.\n";
             return -1;
         }
-        Buffer* buf = &buffers[owner].front();
-        if (!buf->doneParsed){
-            std::cout << "PacketParser::getRequest: Bad call: Incompleted packet.\n";
-            return -1;
-        }
-
-        result = std::make_unique<container::Request>(owner, buf->opcode, buf->raw);
-        buffers[owner].pop_front();
-        completedNBufs[owner]--;
+        result = std::move(completedPackets.front());
+        completedPackets.pop();
         return 0;
+    }
+
+    bool canRetrieve(){
+        return (completedPackets.size() > 0);
     }
 };
 
 class Server {
 private:
     // TCP Parser var
-    PacketParser Parser;
+    PacketParser parser;
 
     // Server shit
     uint32_t clientCount = 0;
@@ -213,8 +201,11 @@ public:
         epoll_event tmp_ev;
         int nfds = epoll_wait(epfd, events, MAX_CLIENTS + 1, 0);
 
-        for (int i = 0; i < nfds; ++i){
-            int fd = events[i].data.fd;
+        if (!parser.canRetrieve()){
+            
+        }
+
+        for (int i = 0; i < nfds; ++i){ int fd = events[i].data.fd;
 
             if (fd == serverFd){
                 sockaddr_in clientAddr;
@@ -238,9 +229,9 @@ public:
                 std::string buffer;
                 buffer.resize(BUF_SIZE);
                 size_t bytes = read(fd, buffer.data(), buffer.size());
-                buffer.resize(bytes + 1);
+                buffer.resize(bytes);
 
-                if (bytes > 0) Parser.feed(fd, buffer);
+                if (bytes > 0) parser.feed(fd, buffer);
             }
 
             if (events[i].events & EPOLLOUT){
@@ -266,7 +257,6 @@ public:
                     if (buffer->offset >= buffer->msg.size()) sendQueue[fd].pop();
                 }
             }
-
             if (events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)){
                 closeClient(fd);
                 std::cout << "Client at fd number " << fd << " disconnected.\n";
@@ -296,7 +286,7 @@ public:
         sendQueue[fd].push(sending);
         epoll_event tmp_ev;
         tmp_ev.data.fd = fd;
-        tmp_ev.events |= EPOLLOUT;
+        tmp_ev.events = EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR | EPOLLOUT;
         epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &tmp_ev);
         return 0;
     }
