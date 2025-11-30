@@ -48,7 +48,7 @@ namespace container {
     };
 
     enum CommandCode {
-        NULL_CMD = 0, P_NAME_REGISTER,  
+        NULL_CMD, P_NAME_REGISTER,  
     };
 
     struct Command : public Request {
@@ -102,6 +102,8 @@ public:
                 buf->lenParsed++;
                 if (buf->lenParsed >= 2 && buf->len == 0){
                     std::cout << "PacketParser::feed: Warning: Packet with length 0 found.\n";
+                    buf->opParsed = 0;
+                    buf->opcode = 0;
                     buf->lenParsed = 0;
                     i--;
                  }
@@ -236,7 +238,7 @@ public:
                 std::string buffer;
                 buffer.resize(BUF_SIZE);
                 size_t bytes = read(fd, buffer.data(), buffer.size());
-                buffer.resize(bytes);
+                buffer.resize(bytes + 1);
 
                 if (bytes > 0) Parser.feed(fd, buffer);
             }
