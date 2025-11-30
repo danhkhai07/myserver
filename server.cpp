@@ -224,6 +224,7 @@ public:
                 tmp_ev.data.fd = clientFd;
                 epoll_ctl(epfd, EPOLL_CTL_ADD, clientFd, &tmp_ev);
                 std::cout << "IP " << clientIPv4 << " connected through fd number " << clientFd << ".\n";
+                continue;
             }
 
             if (events[i].events & EPOLLIN){
