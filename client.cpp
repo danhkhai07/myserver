@@ -11,7 +11,6 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#define PORT 65000
 #define MSG_SIZE 1024
 
 void receiveMessage(int fd){
@@ -26,14 +25,20 @@ void receiveMessage(int fd){
     }
 }
 
-int main(){
+int main(int argc, char** argv){
+    if (argc < 3 || argc > 3){
+        std::cout << "Usage: " << argv[0] << " [IPv4] [PORT]\n";
+        return -1;
+    }
+    std::string serverip = argv[1];
+    int port = std::stoi(argv[2]);
     int clientSocket = socket(AF_INET, SOCK_STREAM, 0);   
 
     sockaddr_in serverAddress;
     serverAddress.sin_family = AF_INET;
-    serverAddress.sin_port = htons(PORT);
-    serverAddress.sin_addr.s_addr = INADDR_ANY;
-    //inet_pton(AF_INET, "36.50.55.225", &serverAddress.sin_addr.s_addr);
+    serverAddress.sin_port = htons(port);
+    inet_pton(AF_INET, serverip.c_str(), &serverAddress.sin_addr.s_addr);
+
 
     if (connect(clientSocket, (struct sockaddr*)&serverAddress, sizeof(serverAddress)) < 0){
         std::cout << "Connection failed!\n";
@@ -44,7 +49,7 @@ int main(){
     auto sendMsg = [clientSocket](std::string message){
         if (message.size() > MSG_SIZE - 3 || message.size() < 1){
             std::cout << "Error: Cannot send message of that size.\n";
-            return -1;
+            return 0;
         }
 
         uint16_t msgLen = message.size();
@@ -59,18 +64,27 @@ int main(){
         packet.push_back(c2);
         packet += message;
         
-        send(clientSocket, packet.c_str(), packet.size(), 0);
-        return 0;
+        int signal = send(clientSocket, packet.c_str(), packet.size(), 0);
+        if (signal <= 0){
+            std::cout << "Server went down. Closing program...\n";
+            return -1;
+        }
+        if (message[0] != '/') return 1;
+        else return 2;
     };
     
-    std::cout << "Note: While prompting, you may lose the current input due to new messages coming in. In that case, keep typing. The message isn't lost in memory, just invisible.\n";
+    std::cout << "Note: While prompting, you may lose the current input due to new messages coming in. In that case, keep typing. The message memory isn't lost.\n";
+    std::cout << "Type \"/help\" to get started\n";
 
     std::thread t(receiveMessage, clientSocket);
 
     std::cout << "> ";
     std::string message;
     while (std::getline(std::cin, message)){
-        sendMsg(message);
+        int signal = sendMsg(message);
+        if (signal < 0) return -1;
+
+        if (signal == 1) std::cout << "\33[A\33[K";
         std::cout << "> ";
     }
 
