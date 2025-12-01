@@ -30,7 +30,7 @@ int main(){
     sockaddr_in serverAddress;
     serverAddress.sin_family = AF_INET;
     serverAddress.sin_port = htons(PORT);
-    serverAddress.sin_addr.s_addr = inet_addr("36.50.55.225");
+    serverAddress.sin_addr.s_addr = INADDR_ANY;
 
     if (connect(clientSocket, (struct sockaddr*)&serverAddress, sizeof(serverAddress)) < 0){
         std::cout << "Connection failed!\n";
