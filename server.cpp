@@ -404,6 +404,7 @@ private:
             {"/setname",    container::CommandCode::P_NAME_REGISTER},
             {"/msg",        container::CommandCode::P_SEND_MSG},
             {"/onlines",    container::CommandCode::G_CURRENT_ONLINE},
+            {"/help",    container::CommandCode::G_HELP},
         };
 
     std::vector<std::string> parseToken(std::string_view raw){
