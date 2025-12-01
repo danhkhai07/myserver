@@ -3,6 +3,4 @@
 /savetobackup.sh
 /.clangd
 
-/server
-/client
 /program
