@@ -1,5 +1,6 @@
 #include <cstddef>
 #include <iomanip>
+#include <iterator>
 #include <netinet/in.h>
 #include <stdexcept>
 #include <string>
@@ -82,6 +83,8 @@ namespace container {
         Request() = default;
         Request(int sndr, uint8_t op, std::string rw):
              sender(sndr), opcode(op), raw(rw) {}
+        Request(int sndr, std::string rw, std::vector<std::string> tkns):
+             sender(sndr), raw(rw), tokens(tkns) {}
         virtual ~Request() = default;
     };
 
@@ -89,6 +92,8 @@ namespace container {
     public:
         std::unordered_set<int> receiver;
         Message(std::unique_ptr<Request> &req): Request(*req) {};
+        Message(int sndr, std::string rw, std::vector<std::string> tkns):
+             Request(sndr, rw, tkns) {};
     };
 
     enum CommandCode {
@@ -230,7 +235,6 @@ private:
     void addClient(int fd){
         clientCount++;
         metadata::onlineFds.insert(fd);
-        metadata::hasName[fd] = false;
     }
 
     void closeClient(int fd){
@@ -418,7 +422,7 @@ private:
 
 public:
     ///@return 0: no error | -1: raw.empty()
-    int handleMessage(Server& server, std::unique_ptr<container::Request>& Req) {
+    int handleMessage(Server& server, const std::unique_ptr<container::Request>& Req) {
         auto Msg = dynamic_cast<container::Message*>(Req.get());
         std::string msg = Msg->raw;
 
@@ -446,6 +450,12 @@ public:
                 server.sendPacket(Msg->sender, msg);
                 return 0;
             }
+
+            if (recv->second == Msg->sender){
+                msg = "[SERVER] Cannot send message to yourself.";
+                server.sendPacket(Msg->sender, msg);
+                return 0;
+            }
             Msg->receiver.insert(recv->second);
             msg = msg.substr(Msg->tokens[0].size(), msg.size() - Msg->tokens[0].size() - 1);
             msg = "[PERSONAL] " + metadata::fdNameMap[Msg->sender] + ": " + msg;
@@ -457,7 +467,7 @@ public:
         return 0;
     }
 
-    int handleCommand(Server& server, std::unique_ptr<container::Request>& Req) {
+    int handleCommand(Server& server, const std::unique_ptr<container::Request>& Req) {
         auto Cmd = dynamic_cast<container::Command*>(Req.get());
 
         if (Cmd->raw == "") return -1;
@@ -510,8 +520,7 @@ public:
                     msg = "[SERVER] Incorrect argument format.\nUsage: /msg [USERNAME] [MESSAGE]";
                     break;
                 }
-                handleMessage(server, Req);
-                break;
+                return handleMessage(server, std::make_unique<container::Message>(Cmd->sender, Cmd->raw, Cmd->tokens));
             }
 
             case container::CommandCode::G_CURRENT_ONLINE:
@@ -554,14 +563,14 @@ class Dispatcher {
 private:
     struct Callback {
         Handler* obj;
-        int (Handler::*func)(Server&, std::unique_ptr<container::Request>&);
-        int call(Server& server, std::unique_ptr<container::Request>& param){
+        int (Handler::*func)(Server&, const std::unique_ptr<container::Request>&);
+        int call(Server& server, const std::unique_ptr<container::Request>& param){
             return (obj->*func)(server, param);
         }
     };
     std::unordered_map<int, Callback> handlers;
 public:
-    void registerHandler(uint8_t opcode, Handler* h, int (Handler::*f)(Server&, std::unique_ptr<container::Request>&)){
+    void registerHandler(uint8_t opcode, Handler* h, int (Handler::*f)(Server&, const std::unique_ptr<container::Request>&)){
         Callback cal;
         cal.obj = h;
         cal.func = f;
@@ -569,7 +578,7 @@ public:
         return;
     }
 
-    int dispatch(Server& server, std::unique_ptr<container::Request> &req){
+    int dispatch(Server& server, const std::unique_ptr<container::Request> &req){
         auto it = handlers.find(req->opcode);
         if (it == handlers.end()) return -1;
         return it->second.call(server, req);
