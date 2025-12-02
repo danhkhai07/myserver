@@ -1,8 +1,6 @@
 #include <cstddef>
-#include <iomanip>
 #include <iterator>
 #include <netinet/in.h>
-#include <stdexcept>
 #include <string>
 #include <sys/epoll.h>
 #include <sys/socket.h>
@@ -103,9 +101,57 @@ namespace container {
     template<typename T>
     struct RingQueue {
     private:
-        T queue[1024];
+        static const size_t size = 1024;
+        T queue[size + 1];
         int head = 0, tail = 0;
     public:
+        bool empty(){
+            return (head == tail);
+        }
+
+        bool full(){
+            return ((tail + 1) % (size + 1) == head);
+        }
+
+        size_t getSize(){
+            return (tail - head + size + 1) % (size + 1);
+        }
+
+        T& front(){
+            return queue[head];
+        }
+
+        T& back(){
+            return queue[(tail + size) % (size + 1)];
+        }
+
+        bool push_front(const T &in){
+            int nextHead = (head + size) % (size + 1);
+            if (this->full()) return false;
+            queue[nextHead] = in;
+            head = nextHead;
+            return true;
+        }
+
+        bool push_back(const T &in){
+            int nextTail = (tail + 1) % (size + 1);
+            if (this->full()) return false;
+            queue[tail] = in;
+            tail = nextTail;
+            return true;
+        }
+
+        bool pop_front(){
+            if (this->empty()) return false;
+            head = (head + 1) % size;
+            return true;
+        }
+
+        bool pop_back(){
+            if (this->empty()) return false;
+            tail = (tail + size) % (size + 1);
+            return true;
+        }
     };
 };
 
@@ -124,8 +170,8 @@ private:
         }
     };
 
-    std::queue<container::Request> completedPackets;
-    std::unordered_map<int, std::deque<Buffer>> buffers;
+    container::RingQueue<container::Request> completedPackets;
+    std::unordered_map<int, container::RingQueue<Buffer>> buffers;
 
 public:
     int feed(int sender, std::string_view packet){
@@ -159,7 +205,7 @@ public:
                 
             if (buf->len == 0){
                 container::Request req = container::Request(sender, buf->opcode, buf->raw);
-                completedPackets.push(req);
+                completedPackets.push_back(req);
                 buffers[sender].pop_front();
 
                 if (i + 1 < packet.size()){
@@ -178,12 +224,12 @@ public:
             return -1;
         }
         result = completedPackets.front();
-        completedPackets.pop();
+        completedPackets.pop_front();
         return 0;
     }
 
     bool canRetrieve(){
-        return (completedPackets.size() > 0);
+        return (completedPackets.getSize() > 0);
     }
 };
 
@@ -205,8 +251,8 @@ private:
         int offset = 0;
         std::string msg;
     };
-    std::queue<container::Request> getQueue;
-    std::unordered_map<int, std::queue<ToSendMessage>> sendQueue;
+    container::RingQueue<container::Request> getQueue;
+    std::unordered_map<int, container::RingQueue<ToSendMessage>> sendQueue;
     
     int setNonBlocking(int fd) {
         int flags = fcntl(fd, F_GETFL, 0);
@@ -263,7 +309,7 @@ public:
         while (parser.canRetrieve()){
             container::Request tmp;
             parser.getRequest(tmp);
-            getQueue.push(tmp);
+            getQueue.push_back(tmp);
         }
 
         for (int i = 0; i < nfds; ++i){ int fd = events[i].data.fd;
@@ -335,7 +381,7 @@ public:
                     std::cout << "Client at fd number " << fd << " disconnected.\n";
                 } else {
                     buffer->offset += sent;
-                    if (buffer->offset >= buffer->msg.size()) sendQueue[fd].pop();
+                    if (buffer->offset >= buffer->msg.size()) sendQueue[fd].pop_front();
                 }
             }
             if (events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)){
@@ -356,7 +402,7 @@ public:
     int getRequest(container::Request& dest){
         if (!canGet()) return -1;
         dest = getQueue.front();
-        getQueue.pop();
+        getQueue.pop_front();
         return 0;
     }
 
@@ -364,7 +410,7 @@ public:
     int sendPacket(int fd, std::string_view msg){
         ToSendMessage sending;
         sending.msg = msg;
-        sendQueue[fd].push(sending);
+        sendQueue[fd].push_back(sending);
         epoll_event tmp_ev;
         tmp_ev.data.fd = fd;
         tmp_ev.events = EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR | EPOLLOUT;
