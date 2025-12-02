@@ -1,8 +1,7 @@
 #include <cstddef>
-#include <iomanip>
 #include <iterator>
 #include <netinet/in.h>
-#include <stdexcept>
+#include <queue>
 #include <string>
 #include <sys/epoll.h>
 #include <sys/socket.h>
@@ -14,12 +13,10 @@
 #include <cstdint>
 #include <ctime>
 #include <functional>
+#include <vector>
 #include <cstring>
 #include <cstdio>
-#include <memory>
 #include <iostream>
-#include <queue>
-#include <deque>
 #include <unordered_map>
 #include <algorithm>
 
@@ -35,6 +32,7 @@ namespace metadata {
     std::unordered_map<int, std::string> fdNameMap;
 
     int removeFdName(int fd){
+        if (!hasName[fd]) return 0;
         auto it = fdNameMap.find(fd);      
         if (it != fdNameMap.end()){
             nameFdMap.erase(it->second);
@@ -47,9 +45,14 @@ namespace metadata {
         return 0;
     }
 
-    int addFdName(int fd, const std::string& name){
+    int addFdName(int fd, const char* name, uint16_t size){
         if (hasName[fd]){ 
             std::cout << "metadata::addFdName: Client " << fd << " already has a name by " << fdNameMap[fd] <<".\n";
+            return -1;
+        }
+
+        if (size < 4 || size > 15){
+            std::cout << "metadata::addFdName: Client " << fd << "'s choice of name is out of \"character\".\n";
             return -1;
         }
 
@@ -74,28 +77,6 @@ namespace miscellaneous {
 }
 
 namespace container {
-    struct Request {
-        int sender = -1;
-        uint8_t opcode = 0;
-        std::string raw;
-        std::vector<std::string> tokens;
-
-        Request() = default;
-        Request(int sndr, uint8_t op, std::string rw):
-             sender(sndr), opcode(op), raw(rw) {}
-        Request(int sndr, std::string rw, std::vector<std::string> tkns):
-             sender(sndr), raw(rw), tokens(tkns) {}
-        virtual ~Request() = default;
-    };
-
-    struct Message : public Request {
-    public:
-        std::unordered_set<int> receiver;
-        Message(std::unique_ptr<Request> &req): Request(*req) {};
-        Message(int sndr, std::string rw, std::vector<std::string> tkns):
-             Request(sndr, rw, tkns) {};
-    };
-
     enum CommandCode {
         NULL_CMD, 
         P_NAME_REGISTER, 
@@ -104,12 +85,84 @@ namespace container {
         G_HELP
     };
 
-    struct Command : public Request {
-    private:
-    public:
+    struct Request {
+        int sender = -1;
+        uint8_t opcode = 0;
+        char raw[PACKET_SIZE];
+        uint16_t len = 0;
+        std::vector<std::string> tokens;
+        std::unordered_set<int> receiver;
         CommandCode code = CommandCode::NULL_CMD;
 
-        Command(std::unique_ptr<Request> &req): Request(*req) {};
+        Request() = default;
+        Request(int sndr, uint8_t op, char* rw, uint16_t ln):
+            sender(sndr), opcode(op), len(ln)
+        {
+            std::memcpy(raw, rw, ln);
+        }
+        Request(int sndr, char* rw, uint16_t ln, std::vector<std::string> tkns):
+            sender(sndr), len(ln), tokens(tkns)
+        {
+            std::memcpy(raw, rw, ln);
+        }
+
+        ~Request() = default;
+    };
+
+    template<typename T>
+    struct RingQueue {
+    private:
+        static const uint16_t size = 1024;
+        T queue[size + 1];
+        int head = 0, tail = 0;
+    public:
+        bool empty(){
+            return (head == tail);
+        }
+
+        bool full(){
+            return ((tail + 1) % (size + 1) == head);
+        }
+
+        uint16_t getSize(){
+            return (tail - head + size + 1) % (size + 1);
+        }
+
+        T& front(){
+            return queue[head];
+        }
+
+        T& back(){
+            return queue[(tail + size) % (size + 1)];
+        }
+
+        bool push_front(const T &in){
+            int nextHead = (head + size) % (size + 1);
+            if (this->full()) return false;
+            queue[nextHead] = in;
+            head = nextHead;
+            return true;
+        }
+
+        bool push_back(const T &in){
+            int nextTail = (tail + 1) % (size + 1);
+            if (this->full()) return false;
+            queue[tail] = in;
+            tail = nextTail;
+            return true;
+        }
+
+        bool pop_front(){
+            if (this->empty()) return false;
+            head = (head + 1) % (size + 1);
+            return true;
+        }
+
+        bool pop_back(){
+            if (this->empty()) return false;
+            tail = (tail + size) % (size + 1);
+            return true;
+        }
     };
 };
 
@@ -121,39 +174,28 @@ private:
 
         uint8_t opParsed = 0;
         uint8_t opcode = 0;
-        std::string raw;
+        char raw[PACKET_SIZE];
 
         void reset(){
             *this = Buffer();
         }
     };
 
-    std::queue<std::unique_ptr<container::Request>> completedPackets;
-    std::unordered_map<int, std::deque<Buffer>> buffers;
-
-    std::unique_ptr<container::Request> categorize(int sender, uint8_t opcode, std::string raw){
-        std::unique_ptr<container::Request> req = std::make_unique<container::Request>(sender, opcode, raw);
-        switch (req->opcode){
-            case 0: return req;
-            case 1: return std::make_unique<container::Message>(req);
-            case 2: return std::make_unique<container::Command>(req);
-            default:
-                std::runtime_error("Unknown opcode\n");
-                return nullptr;
-        }
-    }
-
+    container::RingQueue<container::Request> completedPackets;
+    std::unordered_map<int, container::RingQueue<Buffer>> buffers;
 
 public:
-    int feed(int sender, std::string_view packet){
+    int feed(int sender, char* packet, uint16_t len){
         Buffer* buf;
         if (buffers[sender].empty()){
             buffers[sender].push_back(Buffer());
         }
         buf = &buffers[sender].back();
-
-        for (int i = 0; i < packet.size(); ++i){
-            char c = packet[i];
+            
+        char* it = packet;   
+        uint16_t tmp_len = 0;
+        for (int i = 0; i < len; ++i, ++it){
+            char c = *it;
             // parse opcode
             if (buf->opParsed < 1){
                 buf->opcode = static_cast<uint8_t>(c);
@@ -164,23 +206,30 @@ public:
             if (buf->lenParsed < 2){
                 buf->len = (buf->len << 8) | static_cast<uint8_t>(c);
                 buf->lenParsed++;
-                if (buf->lenParsed >= 2 && buf->len == 0){
-                    std::cout << "PacketParser::feed: Warning: Packet with length 0 found.\n";
-                    buf->reset();
+
+                if (buf->lenParsed >= 2){
+                    if (buf->len == 0){
+                        std::cout << "PacketParser::feed: Warning: Packet with length 0 found.\n";
+                        buf->reset();
+                    }
+                    if (buf->len > PACKET_SIZE){
+                        std::cout << "PacketParser::feed: Client " << sender << " sent an oversized packet (>1024 bytes). Returning an error.\n";
+                        return -1;
+                    }
                 }
                 continue;
             }
 
-            buf->raw += c;
-            buf->len--;
+            buf->raw[tmp_len] = c;
+            tmp_len++;
                 
-            if (buf->len == 0){
-                std::unique_ptr<container::Request> req = categorize(sender, buf->opcode, buf->raw);
-                if (req == nullptr) return -1;
-                completedPackets.push(std::move(req));
+            if (tmp_len >= buf->len){
+                tmp_len = 0;
+                container::Request req = container::Request(sender, buf->opcode, buf->raw, buf->len);
+                completedPackets.push_back(req);
                 buffers[sender].pop_front();
 
-                if (i + 1 < packet.size()){
+                if (i + 1 < len){
                     buffers[sender].push_back(Buffer());
                     buf = &buffers[sender].back();
                 }
@@ -190,18 +239,18 @@ public:
         return 0;
     }
 
-    int getRequest(std::unique_ptr<container::Request> &result){
+    int getRequest(container::Request &result){
         if (completedPackets.empty()){
             std::cout << "PacketParser::getRequest: Bad call: Queue is empty.\n";
             return -1;
         }
-        result = std::move(completedPackets.front());
-        completedPackets.pop();
+        result = completedPackets.front();
+        completedPackets.pop_front();
         return 0;
     }
 
     bool canRetrieve(){
-        return (completedPackets.size() > 0);
+        return (completedPackets.getSize() > 0);
     }
 };
 
@@ -212,19 +261,20 @@ private:
 
     // Server shit
     uint32_t clientCount = 0;
-    int serverFd;
-    int epfd;
-    uint16_t port;
+    int serverFd = -1;
+    int epfd = -1;
+    uint16_t port = 0;
     sockaddr_in serverAddr;
     epoll_event events[MAX_CLIENTS + 1];
 
     // TCP queue shit
     struct ToSendMessage {
         int offset = 0;
-        std::string msg;
+        uint16_t len = 0;
+        char msg[PACKET_SIZE];
     };
-    std::queue<std::unique_ptr<container::Request>> getQueue;
-    std::unordered_map<int, std::queue<ToSendMessage>> sendQueue;
+    container::RingQueue<container::Request> getQueue;
+    std::unordered_map<int, container::RingQueue<ToSendMessage>> sendQueue;
     
     int setNonBlocking(int fd) {
         int flags = fcntl(fd, F_GETFL, 0);
@@ -246,6 +296,14 @@ private:
     }
 
 public:
+    Server():
+        clientCount(0),
+        serverFd(-1),
+        epfd(-1),
+        port(0)
+    {
+        // nothing else to do
+    }
     ~Server(){
         if (serverFd >= 0) close(serverFd);
         if (epfd >= 0) close(epfd);
@@ -254,6 +312,10 @@ public:
     int initialize(uint16_t p){
         port = p;
         serverFd = socket(AF_INET, SOCK_STREAM, 0);
+        if (serverFd < 0){
+            perror("serverFd");
+            return -1;
+        }
         if (serverFd < 0) return -1;  
 
         serverAddr.sin_addr.s_addr = INADDR_ANY;
@@ -265,6 +327,10 @@ public:
         setNonBlocking(serverFd);
 
         epfd = epoll_create1(0);
+        if (epfd < 0){
+            perror("epoll_create1");
+            return -1;
+        }
         epoll_event tmp_ev;    
         tmp_ev.events = EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR;
         tmp_ev.data.fd = serverFd;
@@ -279,12 +345,13 @@ public:
         int nfds = epoll_wait(epfd, events, MAX_CLIENTS + 1, 0);
 
         while (parser.canRetrieve()){
-            std::unique_ptr<container::Request> tmp;
+            container::Request tmp;
             parser.getRequest(tmp);
-            getQueue.push(std::move(tmp));
+            getQueue.push_back(tmp);
         }
 
-        for (int i = 0; i < nfds; ++i){ int fd = events[i].data.fd;
+        for (int i = 0; i < nfds; ++i){ 
+            int fd = events[i].data.fd;
 
             if (fd == serverFd){
                 sockaddr_in clientAddr;
@@ -306,9 +373,8 @@ public:
                 continue;
             }
             if (events[i].events & EPOLLIN){
-                std::string buffer;
-                buffer.resize(BUF_SIZE);
-                int bytes = read(fd, buffer.data(), buffer.size());
+                char buffer[BUF_SIZE];
+                int bytes = read(fd, buffer, sizeof(buffer));
                 if (bytes <= 0) {
                     if (bytes == 0) {
                         // connection closed
@@ -321,10 +387,9 @@ public:
                     }
                     continue;
                 }
-                buffer.resize(bytes);
 
                 int feedReturn;
-                if (bytes > 0) feedReturn = parser.feed(fd, buffer);
+                if (bytes > 0) feedReturn = parser.feed(fd, buffer, bytes);
                 if (feedReturn < 0){
                     std::cout << "Server::process: An error occur when feeding packets of client " << fd << ".\n";
                     std::cout << "Server::process: Dropping client " << fd << ".\n";
@@ -343,8 +408,8 @@ public:
                 }
 
                 ToSendMessage* buffer = &sendQueue[fd].front();
-                int messageSize = std::min((int)buffer->msg.size() - buffer->offset, BUF_SIZE);
-                int sent = send(fd, buffer->msg.data() + buffer->offset, messageSize, 0);
+                int messageSize = std::min((int) buffer->len - buffer->offset, BUF_SIZE);
+                int sent = send(fd, buffer->msg + buffer->offset, messageSize, 0);
                 if (sent == -1) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) {
                         continue;
@@ -353,7 +418,7 @@ public:
                     std::cout << "Client at fd number " << fd << " disconnected.\n";
                 } else {
                     buffer->offset += sent;
-                    if (buffer->offset >= buffer->msg.size()) sendQueue[fd].pop();
+                    if (buffer->offset >= buffer->len) sendQueue[fd].pop_front();
                 }
             }
             if (events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)){
@@ -371,18 +436,20 @@ public:
 
     /// The queue stores unique_ptr, so you MUST utilize the result, as queue.front is popped
     /// immediately after retrieval. int getRequest(std::unique_ptr<container::Request>& dest){
-    int getRequest(std::unique_ptr<container::Request>& dest){
+    int getRequest(container::Request& dest){
         if (!canGet()) return -1;
-        dest = std::move(getQueue.front());
-        getQueue.pop();
+        dest = getQueue.front();
+        getQueue.pop_front();
         return 0;
     }
 
     /// ONLY add the request to queue; the queue is processed in process(). 
-    int sendPacket(int fd, std::string msg){
+    int sendPacket(int fd, char* msg, uint16_t len){
         ToSendMessage sending;
-        sending.msg = msg;
-        sendQueue[fd].push(sending);
+        std::memcpy(sending.msg, msg, len);
+        sending.len = len;
+        //std::cout << "Sending " << sending.msg << "...\n";
+        sendQueue[fd].push_back(sending);
         epoll_event tmp_ev;
         tmp_ev.data.fd = fd;
         tmp_ev.events = EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR | EPOLLOUT;
@@ -399,163 +466,195 @@ public:
 
 class Handler {
 private:
-    std::unordered_map<std::string, container::CommandCode> tokenCmdCodeMap = 
+    const std::unordered_map<std::string, container::CommandCode> tokenCmdCodeMap = 
         {
             {"/setname",    container::CommandCode::P_NAME_REGISTER},
             {"/msg",        container::CommandCode::P_SEND_MSG},
             {"/onlines",    container::CommandCode::G_CURRENT_ONLINE},
-            {"/help",    container::CommandCode::G_HELP},
+            {"/help",       container::CommandCode::G_HELP},
         };
+
+    void appendChar(const char* s, char* out, uint16_t& len){
+        size_t n = strlen(s);
+        std::memcpy(out + len, s, n);
+        len += n;
+    }
 
     std::vector<std::string> parseToken(std::string_view raw){
         std::vector<std::string> res;
-        std::string w;
+        char w[PACKET_SIZE];
+        uint16_t w_len = 0;
         for (char c : raw){
             if (c == ' '){
-                if (!w.empty()){ res.push_back(w); w.clear(); }
+                if (w_len > 0){
+                    res.push_back(w);
+                    w[0] = '\0';
+                    w_len = 0;
+                }
             } else {
-                w.push_back(c);
+                w[w_len] = c;
+                w_len++;
             }
         }
-        if (!w.empty()) res.push_back(w);
+        if (w_len > 0){
+            res.push_back(w);
+        }
         return res;
     }
 
 public:
     ///@return 0: no error | -1: raw.empty()
-    int handleMessage(Server& server, const std::unique_ptr<container::Request>& Req) {
-        auto Msg = dynamic_cast<container::Message*>(Req.get());
-        std::string msg = Msg->raw;
+    int handleMessage(Server& server, container::Request& Req) {
+        char msg[PACKET_SIZE + 64]; //padding for extra characters 
+        uint16_t len = 0;
 
         //refuse to let unnamed users send messages
-        if (!metadata::hasName[Msg->sender]){
-            msg = "[SERVER] Cannot send messages while unnamed. To name yourself, use command \"/setname\" as follows:\nUsage: /setname [NAME]";
-            server.sendPacket(Msg->sender, msg);
+        if (!metadata::hasName[Req.sender]){
+            appendChar(
+                "[SERVER] Cannot send messages while unnamed. To name yourself, use command \"/setname\" as follows:\nUsage: /setname [NAME]",
+                msg, len);
+                
+            server.sendPacket(Req.sender, msg, len);
             return 0;
         }
 
-        if (Msg->raw == "") return -1;
-        if (Msg->tokens.size() == 0) Msg->tokens = parseToken(Msg->raw);
+        if (Req.len == 0) return -1;
+        if (Req.tokens.size() == 0) Req.tokens = parseToken(Req.raw);
         
 
-        if (Msg->tokens[0][0] != '/'){
+        if (Req.tokens[0][0] != '/'){
             //global message
-            Msg->receiver = metadata::onlineFds;
-            msg = "[GLOBAL] " + metadata::fdNameMap[Msg->sender] + ": " + msg;
+            Req.receiver = metadata::onlineFds;
+            appendChar("[GLOBAL] ", msg, len);
+            appendChar(metadata::fdNameMap[Req.sender].c_str(), msg, len);
+            appendChar(": ", msg, len);
+            appendChar(Req.raw, msg, len);
         } else {
             //personal message
-            Msg->receiver.insert(Msg->sender);
-            auto recv = metadata::nameFdMap.find(Msg->tokens[1]);
+            Req.receiver.insert(Req.sender);
+            auto recv = metadata::nameFdMap.find(Req.tokens[1]);
             if (recv == metadata::nameFdMap.end()){
-                msg = "[SERVER] Cannot find user with that name.";
-                server.sendPacket(Msg->sender, msg);
+                appendChar("[SERVER] Cannot find user with that name.", msg, len);
+                server.sendPacket(Req.sender, msg, len);
                 return 0;
             }
 
-            if (recv->second == Msg->sender){
-                msg = "[SERVER] Cannot send message to yourself.";
-                server.sendPacket(Msg->sender, msg);
+            if (recv->second == Req.sender){
+                appendChar( "[SERVER] Cannot send message to yourself.", msg, len);
+                server.sendPacket(Req.sender, msg, len);
                 return 0;
             }
-            Msg->receiver.insert(recv->second);
-            msg = msg.substr(Msg->tokens[0].size(), msg.size() - Msg->tokens[0].size() - 1);
-            msg = "[PERSONAL] " + metadata::fdNameMap[Msg->sender] + ": " + msg;
+            Req.receiver.insert(recv->second);
+            int redundant = Req.tokens[0].size() + Req.tokens[1].size() + 2;
+            char tmp_msg[1024];
+            std::memcpy(tmp_msg, msg + redundant, len);
+
+            char custom[PACKET_SIZE];
+            uint16_t custom_len = 0;
+            appendChar("[PERSONAL] ", custom, custom_len);
+            appendChar(metadata::fdNameMap[Req.sender].c_str(), custom, custom_len);
+            appendChar(": ", custom, custom_len);
+            appendChar(tmp_msg, custom, custom_len);
+
+            std::memcpy(msg, custom, custom_len);
+            len = strlen(msg);
         }
         
-        for (int i:Msg->receiver){
-            server.sendPacket(i, msg);
+        for (int i:Req.receiver){
+            server.sendPacket(i, msg, len);
         }
         return 0;
     }
 
-    int handleCommand(Server& server, const std::unique_ptr<container::Request>& Req) {
-        auto Cmd = dynamic_cast<container::Command*>(Req.get());
+    int handleCommand(Server& server, container::Request& Req) {
+        if (Req.len == 0) return -1;
+        if (Req.tokens.size() == 0) Req.tokens = parseToken(Req.raw);
 
-        if (Cmd->raw == "") return -1;
-        if (Cmd->tokens.size() == 0) Cmd->tokens = parseToken(Cmd->raw);
+        char msg[PACKET_SIZE + 64]; //padding for extra characters 
+        uint16_t len = 0;
 
         container::CommandCode cmdCode = container::CommandCode::NULL_CMD;
         {
-            auto it = tokenCmdCodeMap.find(Cmd->tokens[0]);
+            auto it = tokenCmdCodeMap.find(Req.tokens[0]);
             if (it != tokenCmdCodeMap.end()) cmdCode = it->second;
         }
 
-        std::string msg;
         switch (cmdCode){
-            case container::CommandCode::NULL_CMD:
-                msg = "[SERVER] Unknown command.";
-                break;
-
             case container::CommandCode::P_NAME_REGISTER:
             {
-                if (Cmd->tokens.size() < 2 || Cmd->tokens.size() > 2){
-                    msg = "[SERVER] Incorrect argument format.\nUsage: /setname [NAME]";
+                if (Req.tokens.size() < 2 || Req.tokens.size() > 2){
+                    appendChar("[SERVER] Incorrect argument format.\nUsage: /setname [NAME]", msg, len);
                     break;
                 }
 
-                if (metadata::hasName[Cmd->sender]){
-                    msg = "[SERVER] Your name has already been set!";
+                if (metadata::hasName[Req.sender]){
+                    appendChar("[SERVER] Your name has already been set!", msg, len);
                     break;
                 }    
 
-                std::string newUsername = Cmd->tokens[1];
+                std::string newUsername = Req.tokens[1];
                 {
                     auto it = metadata::nameFdMap.find(newUsername);
                     if (it != metadata::nameFdMap.end() ){ 
-                        if (it->second != Cmd->sender)
-                            msg = "[SERVER] Username is already taken.";
+                        if (it->second != Req.sender)
+                            appendChar("[SERVER] Username is already taken.", msg, len);
                         else 
-                            msg = "[SERVER] Are you trippin'?";
+                            appendChar("[SERVER] Are you trippin'?", msg, len);
                         break;
                     }
                 }
 
-                metadata::addFdName(Cmd->sender, newUsername);
-                msg = "[SERVER] Username successfully set!";
+                metadata::addFdName(Req.sender, newUsername.c_str(), newUsername.size());
+                appendChar("[SERVER] Username successfully set!", msg, len);
                 break;
             }
 
             case container::CommandCode::P_SEND_MSG:
             {
-                if (Cmd->tokens.size() < 3){
-                    msg = "[SERVER] Incorrect argument format.\nUsage: /msg [USERNAME] [MESSAGE]";
+                if (Req.tokens.size() < 3){
+                    appendChar("[SERVER] Incorrect argument format.\nUsage: /msg [USERNAME] [MESSAGE]", msg, len);
                     break;
                 }
-                return handleMessage(server, std::make_unique<container::Message>(Cmd->sender, Cmd->raw, Cmd->tokens));
+                return handleMessage(server, Req);
             }
 
             case container::CommandCode::G_CURRENT_ONLINE:
             {    
-                if (Cmd->tokens.size() > 1){
-                    msg = "[SERVER] Incorrect argument format.\nUsage: /onlines";
+                if (Req.tokens.size() > 1){
+                    appendChar("[SERVER] Incorrect argument format.\nUsage: /onlines", msg, len);
                     break;
                 }
 
-                msg = "[SERVER] Active list:\n";
+                appendChar("[SERVER] Active list:\n", msg, len);
                 for (int i:metadata::onlineFds){
                     if (metadata::hasName[i]){
-                        msg.push_back('\t');
-                        msg += metadata::fdNameMap[i];
-                        msg.push_back('\n');
+                        appendChar("\t", msg, len);
+                        appendChar(metadata::fdNameMap[i].c_str(), msg, len);
+                        appendChar("\n", msg, len);
                     }
                 }
+                msg[len] = '\0'; // pop the last \n char
                 break;
             }
             
             case container::CommandCode::G_HELP:
             {
-                msg = "To chat globally, simply type directly after '>' symbol.\n Available commands include:\n \t/help\t: Display this text.\n \t/setname [NAME]\t: Set your own name before texting.\n \t/onlines\t: Display currently online users.\n \t/msg [NAME] [MESSAGE]\t: Message privately with an active user.\n";
+                appendChar("To chat globally, simply type directly after '>' symbol.\nAvailable commands include:\n    /help\t\t\t: Display this text.\n    /setname [NAME]\t\t: Set your own name before texting.\n    /onlines\t\t\t: Display currently online users.\n    /msg [NAME] [MESSAGE]\t: Message privately with an active user.", msg, len);
                 // To chat globally, simply type directly after '>' symbol.\n
                 // Available commands include:\n
-                // \t/help\t: Display this text.\n
-                // \t/setname [NAME]\t: Set your own name before texting.\n
-                // \t/onlines\t: Display currently online users.\n
-                // \t/msg [NAME] [MESSAGE]\t: Message privately with an active user.\n
+                //     /help\t\t\t: Display this text.\n
+                //     /setname [NAME]\t\t: Set your own name before texting.\n
+                //     /onlines\t\t\t: Display currently online users.\n
+                //     /msg [NAME] [MESSAGE]\t: Message privately with an active user.\n
                 break;
             }
+
+            case container::CommandCode::NULL_CMD:
+                appendChar("[SERVER] Unknown command.", msg, len);
+                break;
         }
 
-        server.sendPacket(Cmd->sender, msg);
+        server.sendPacket(Req.sender, msg, len);
         return 0;
     }
 };
@@ -564,14 +663,14 @@ class Dispatcher {
 private:
     struct Callback {
         Handler* obj;
-        int (Handler::*func)(Server&, const std::unique_ptr<container::Request>&);
-        int call(Server& server, const std::unique_ptr<container::Request>& param){
+        int (Handler::*func)(Server&, container::Request&);
+        int call(Server& server, container::Request& param){
             return (obj->*func)(server, param);
         }
     };
     std::unordered_map<int, Callback> handlers;
 public:
-    void registerHandler(uint8_t opcode, Handler* h, int (Handler::*f)(Server&, const std::unique_ptr<container::Request>&)){
+    void registerHandler(uint8_t opcode, Handler* h, int (Handler::*f)(Server&, container::Request&)){
         Callback cal;
         cal.obj = h;
         cal.func = f;
@@ -579,13 +678,11 @@ public:
         return;
     }
 
-    int dispatch(Server& server, const std::unique_ptr<container::Request> &req){
-        auto it = handlers.find(req->opcode);
+    int dispatch(Server& server, container::Request& req){
+        auto it = handlers.find(req.opcode);
         if (it == handlers.end()) return -1;
         return it->second.call(server, req);
     }
-
-
 };
 
 int main(int argc, char** argv){
@@ -614,11 +711,11 @@ int main(int argc, char** argv){
     server.initialize(port);
     while(true){
         server.process();
-        std::unique_ptr<container::Request> req;
+        container::Request req;
         if (server.canGet()){
             server.getRequest(req);
             if (dispatcher.dispatch(server, req) < 0){;
-                server.dropClient(req->sender);
+                server.dropClient(req.sender);
             }
         }
     }
