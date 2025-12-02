@@ -112,7 +112,7 @@ namespace container {
     template<typename T>
     struct RingQueue {
     private:
-        static const uint16_t size = 1024;
+        static const uint16_t size = 8;
         T queue[size + 1];
         int head = 0, tail = 0;
     public:
