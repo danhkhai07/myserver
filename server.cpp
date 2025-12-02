@@ -75,28 +75,6 @@ namespace miscellaneous {
 }
 
 namespace container {
-    struct Request {
-        int sender = -1;
-        uint8_t opcode = 0;
-        std::string raw;
-        std::vector<std::string> tokens;
-
-        Request() = default;
-        Request(int sndr, uint8_t op, std::string rw):
-             sender(sndr), opcode(op), raw(rw) {}
-        Request(int sndr, std::string rw, std::vector<std::string> tkns):
-             sender(sndr), raw(rw), tokens(tkns) {}
-        virtual ~Request() = default;
-    };
-
-    struct Message : public Request {
-    public:
-        std::unordered_set<int> receiver;
-        Message(std::unique_ptr<Request> &req): Request(*req) {};
-        Message(int sndr, std::string rw, std::vector<std::string> tkns):
-             Request(sndr, rw, tkns) {};
-    };
-
     enum CommandCode {
         NULL_CMD, 
         P_NAME_REGISTER, 
@@ -105,12 +83,29 @@ namespace container {
         G_HELP
     };
 
-    struct Command : public Request {
-    private:
-    public:
+    struct Request {
+        int sender = -1;
+        uint8_t opcode = 0;
+        std::string raw;
+        std::vector<std::string> tokens;
+        std::unordered_set<int> receiver;
         CommandCode code = CommandCode::NULL_CMD;
 
-        Command(std::unique_ptr<Request> &req): Request(*req) {};
+        Request() = default;
+        Request(int sndr, uint8_t op, std::string rw):
+             sender(sndr), opcode(op), raw(rw) {}
+        Request(int sndr, std::string rw, std::vector<std::string> tkns):
+             sender(sndr), raw(rw), tokens(tkns) {}
+
+        ~Request() = default;
+    };
+
+    template<typename T>
+    struct RingQueue {
+    private:
+        T queue[1024];
+        int head = 0, tail = 0;
+    public:
     };
 };
 
@@ -129,21 +124,8 @@ private:
         }
     };
 
-    std::queue<std::unique_ptr<container::Request>> completedPackets;
+    std::queue<container::Request> completedPackets;
     std::unordered_map<int, std::deque<Buffer>> buffers;
-
-    std::unique_ptr<container::Request> categorize(int sender, uint8_t opcode, std::string raw){
-        std::unique_ptr<container::Request> req = std::make_unique<container::Request>(sender, opcode, raw);
-        switch (req->opcode){
-            case 0: return req;
-            case 1: return std::make_unique<container::Message>(req);
-            case 2: return std::make_unique<container::Command>(req);
-            default:
-                std::runtime_error("Unknown opcode\n");
-                return nullptr;
-        }
-    }
-
 
 public:
     int feed(int sender, std::string_view packet){
@@ -176,9 +158,8 @@ public:
             buf->len--;
                 
             if (buf->len == 0){
-                std::unique_ptr<container::Request> req = categorize(sender, buf->opcode, buf->raw);
-                if (req == nullptr) return -1;
-                completedPackets.push(std::move(req));
+                container::Request req = container::Request(sender, buf->opcode, buf->raw);
+                completedPackets.push(req);
                 buffers[sender].pop_front();
 
                 if (i + 1 < packet.size()){
@@ -191,12 +172,12 @@ public:
         return 0;
     }
 
-    int getRequest(std::unique_ptr<container::Request> &result){
+    int getRequest(container::Request &result){
         if (completedPackets.empty()){
             std::cout << "PacketParser::getRequest: Bad call: Queue is empty.\n";
             return -1;
         }
-        result = std::move(completedPackets.front());
+        result = completedPackets.front();
         completedPackets.pop();
         return 0;
     }
@@ -224,7 +205,7 @@ private:
         int offset = 0;
         std::string msg;
     };
-    std::queue<std::unique_ptr<container::Request>> getQueue;
+    std::queue<container::Request> getQueue;
     std::unordered_map<int, std::queue<ToSendMessage>> sendQueue;
     
     int setNonBlocking(int fd) {
@@ -280,9 +261,9 @@ public:
         int nfds = epoll_wait(epfd, events, MAX_CLIENTS + 1, 0);
 
         while (parser.canRetrieve()){
-            std::unique_ptr<container::Request> tmp;
+            container::Request tmp;
             parser.getRequest(tmp);
-            getQueue.push(std::move(tmp));
+            getQueue.push(tmp);
         }
 
         for (int i = 0; i < nfds; ++i){ int fd = events[i].data.fd;
@@ -372,15 +353,15 @@ public:
 
     /// The queue stores unique_ptr, so you MUST utilize the result, as queue.front is popped
     /// immediately after retrieval. int getRequest(std::unique_ptr<container::Request>& dest){
-    int getRequest(std::unique_ptr<container::Request>& dest){
+    int getRequest(container::Request& dest){
         if (!canGet()) return -1;
-        dest = std::move(getQueue.front());
+        dest = getQueue.front();
         getQueue.pop();
         return 0;
     }
 
     /// ONLY add the request to queue; the queue is processed in process(). 
-    int sendPacket(int fd, std::string msg){
+    int sendPacket(int fd, std::string_view msg){
         ToSendMessage sending;
         sending.msg = msg;
         sendQueue[fd].push(sending);
@@ -400,7 +381,7 @@ public:
 
 class Handler {
 private:
-    std::unordered_map<std::string, container::CommandCode> tokenCmdCodeMap = 
+    const std::unordered_map<std::string, container::CommandCode> tokenCmdCodeMap = 
         {
             {"/setname",    container::CommandCode::P_NAME_REGISTER},
             {"/msg",        container::CommandCode::P_SEND_MSG},
@@ -424,61 +405,58 @@ private:
 
 public:
     ///@return 0: no error | -1: raw.empty()
-    int handleMessage(Server& server, const std::unique_ptr<container::Request>& Req) {
-        auto Msg = dynamic_cast<container::Message*>(Req.get());
-        std::string msg = Msg->raw;
+    int handleMessage(Server& server, container::Request& Req) {
+        std::string msg = Req.raw;
 
         //refuse to let unnamed users send messages
-        if (!metadata::hasName[Msg->sender]){
+        if (!metadata::hasName[Req.sender]){
             msg = "[SERVER] Cannot send messages while unnamed. To name yourself, use command \"/setname\" as follows:\nUsage: /setname [NAME]";
-            server.sendPacket(Msg->sender, msg);
+            server.sendPacket(Req.sender, msg);
             return 0;
         }
 
-        if (Msg->raw == "") return -1;
-        if (Msg->tokens.size() == 0) Msg->tokens = parseToken(Msg->raw);
+        if (Req.raw == "") return -1;
+        if (Req.tokens.size() == 0) Req.tokens = parseToken(Req.raw);
         
 
-        if (Msg->tokens[0][0] != '/'){
+        if (Req.tokens[0][0] != '/'){
             //global message
-            Msg->receiver = metadata::onlineFds;
-            msg = "[GLOBAL] " + metadata::fdNameMap[Msg->sender] + ": " + msg;
+            Req.receiver = metadata::onlineFds;
+            msg = "[GLOBAL] " + metadata::fdNameMap[Req.sender] + ": " + msg;
         } else {
             //personal message
-            Msg->receiver.insert(Msg->sender);
-            auto recv = metadata::nameFdMap.find(Msg->tokens[1]);
+            Req.receiver.insert(Req.sender);
+            auto recv = metadata::nameFdMap.find(Req.tokens[1]);
             if (recv == metadata::nameFdMap.end()){
                 msg = "[SERVER] Cannot find user with that name.";
-                server.sendPacket(Msg->sender, msg);
+                server.sendPacket(Req.sender, msg);
                 return 0;
             }
 
-            if (recv->second == Msg->sender){
+            if (recv->second == Req.sender){
                 msg = "[SERVER] Cannot send message to yourself.";
-                server.sendPacket(Msg->sender, msg);
+                server.sendPacket(Req.sender, msg);
                 return 0;
             }
-            Msg->receiver.insert(recv->second);
-            int redundant = Msg->tokens[0].size() + Msg->tokens[1].size() + 2;
+            Req.receiver.insert(recv->second);
+            int redundant = Req.tokens[0].size() + Req.tokens[1].size() + 2;
             msg = msg.substr(redundant - 1, msg.size() - redundant);
-            msg = "[PERSONAL] " + metadata::fdNameMap[Msg->sender] + ": " + msg;
+            msg = "[PERSONAL] " + metadata::fdNameMap[Req.sender] + ": " + msg;
         }
         
-        for (int i:Msg->receiver){
+        for (int i:Req.receiver){
             server.sendPacket(i, msg);
         }
         return 0;
     }
 
-    int handleCommand(Server& server, const std::unique_ptr<container::Request>& Req) {
-        auto Cmd = dynamic_cast<container::Command*>(Req.get());
-
-        if (Cmd->raw == "") return -1;
-        if (Cmd->tokens.size() == 0) Cmd->tokens = parseToken(Cmd->raw);
+    int handleCommand(Server& server, container::Request& Req) {
+        if (Req.raw == "") return -1;
+        if (Req.tokens.size() == 0) Req.tokens = parseToken(Req.raw);
 
         container::CommandCode cmdCode = container::CommandCode::NULL_CMD;
         {
-            auto it = tokenCmdCodeMap.find(Cmd->tokens[0]);
+            auto it = tokenCmdCodeMap.find(Req.tokens[0]);
             if (it != tokenCmdCodeMap.end()) cmdCode = it->second;
         }
 
@@ -486,21 +464,21 @@ public:
         switch (cmdCode){
             case container::CommandCode::P_NAME_REGISTER:
             {
-                if (Cmd->tokens.size() < 2 || Cmd->tokens.size() > 2){
+                if (Req.tokens.size() < 2 || Req.tokens.size() > 2){
                     msg = "[SERVER] Incorrect argument format.\nUsage: /setname [NAME]";
                     break;
                 }
 
-                if (metadata::hasName[Cmd->sender]){
+                if (metadata::hasName[Req.sender]){
                     msg = "[SERVER] Your name has already been set!";
                     break;
                 }    
 
-                std::string newUsername = Cmd->tokens[1];
+                std::string newUsername = Req.tokens[1];
                 {
                     auto it = metadata::nameFdMap.find(newUsername);
                     if (it != metadata::nameFdMap.end() ){ 
-                        if (it->second != Cmd->sender)
+                        if (it->second != Req.sender)
                             msg = "[SERVER] Username is already taken.";
                         else 
                             msg = "[SERVER] Are you trippin'?";
@@ -508,23 +486,23 @@ public:
                     }
                 }
 
-                metadata::addFdName(Cmd->sender, newUsername);
+                metadata::addFdName(Req.sender, newUsername);
                 msg = "[SERVER] Username successfully set!";
                 break;
             }
 
             case container::CommandCode::P_SEND_MSG:
             {
-                if (Cmd->tokens.size() < 3){
+                if (Req.tokens.size() < 3){
                     msg = "[SERVER] Incorrect argument format.\nUsage: /msg [USERNAME] [MESSAGE]";
                     break;
                 }
-                return handleMessage(server, std::make_unique<container::Message>(Cmd->sender, Cmd->raw, Cmd->tokens));
+                return handleMessage(server, Req);
             }
 
             case container::CommandCode::G_CURRENT_ONLINE:
             {    
-                if (Cmd->tokens.size() > 1){
+                if (Req.tokens.size() > 1){
                     msg = "[SERVER] Incorrect argument format.\nUsage: /onlines";
                     break;
                 }
@@ -543,13 +521,13 @@ public:
             
             case container::CommandCode::G_HELP:
             {
-                msg = "To chat globally, simply type directly after '>' symbol.\n Available commands include:\n \t/help\t: Display this text.\n \t/setname [NAME]\t: Set your own name before texting.\n \t/onlines\t: Display currently online users.\n \t/msg [NAME] [MESSAGE]\t: Message privately with an active user.\n";
+                msg = "To chat globally, simply type directly after '>' symbol.\nAvailable commands include:\n    /help\t\t\t: Display this text.\n    /setname [NAME]\t\t: Set your own name before texting.\n    /onlines\t\t\t: Display currently online users.\n    /msg [NAME] [MESSAGE]\t: Message privately with an active user.";
                 // To chat globally, simply type directly after '>' symbol.\n
                 // Available commands include:\n
-                // \t/help\t: Display this text.\n
-                // \t/setname [NAME]\t: Set your own name before texting.\n
-                // \t/onlines\t: Display currently online users.\n
-                // \t/msg [NAME] [MESSAGE]\t: Message privately with an active user.\n
+                //     /help\t\t\t: Display this text.\n
+                //     /setname [NAME]\t\t: Set your own name before texting.\n
+                //     /onlines\t\t\t: Display currently online users.\n
+                //     /msg [NAME] [MESSAGE]\t: Message privately with an active user.\n
                 break;
             }
 
@@ -558,7 +536,7 @@ public:
                 break;
         }
 
-        server.sendPacket(Cmd->sender, msg);
+        server.sendPacket(Req.sender, msg);
         return 0;
     }
 };
@@ -567,14 +545,14 @@ class Dispatcher {
 private:
     struct Callback {
         Handler* obj;
-        int (Handler::*func)(Server&, const std::unique_ptr<container::Request>&);
-        int call(Server& server, const std::unique_ptr<container::Request>& param){
+        int (Handler::*func)(Server&, container::Request&);
+        int call(Server& server, container::Request& param){
             return (obj->*func)(server, param);
         }
     };
     std::unordered_map<int, Callback> handlers;
 public:
-    void registerHandler(uint8_t opcode, Handler* h, int (Handler::*f)(Server&, const std::unique_ptr<container::Request>&)){
+    void registerHandler(uint8_t opcode, Handler* h, int (Handler::*f)(Server&, container::Request&)){
         Callback cal;
         cal.obj = h;
         cal.func = f;
@@ -582,13 +560,11 @@ public:
         return;
     }
 
-    int dispatch(Server& server, const std::unique_ptr<container::Request> &req){
-        auto it = handlers.find(req->opcode);
+    int dispatch(Server& server, container::Request& req){
+        auto it = handlers.find(req.opcode);
         if (it == handlers.end()) return -1;
         return it->second.call(server, req);
     }
-
-
 };
 
 int main(int argc, char** argv){
@@ -617,11 +593,11 @@ int main(int argc, char** argv){
     server.initialize(port);
     while(true){
         server.process();
-        std::unique_ptr<container::Request> req;
+        container::Request req;
         if (server.canGet()){
             server.getRequest(req);
             if (dispatcher.dispatch(server, req) < 0){;
-                server.dropClient(req->sender);
+                server.dropClient(req.sender);
             }
         }
     }
