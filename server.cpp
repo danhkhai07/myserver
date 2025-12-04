@@ -533,13 +533,15 @@ private:
         return res;
     }
 
-public:
-    ///@return 0: no error | -1: raw.empty()
+public: 
+        ///@return 0: no error | -1: raw.empty()
     int handleMessage(Server& server, container::Request& Req) {
-        char msg[PACKET_SIZE + 64]; //padding for extra characters 
+        char msg[PACKET_SIZE + 64]; // padding for extra characters 
         uint16_t len = 0;
+        const uint16_t MSG_CAP = PACKET_SIZE + 64;
+        const uint16_t BODY_CAP = PACKET_SIZE; // for tmp message assembly
 
-        //refuse to let unnamed users send messages
+        // refuse to let unnamed users send messages
         if (!metadata::hasName[Req.sender]){
             appendChar(
                 "[SERVER] Cannot send messages while unnamed. To name yourself, use command \"/setname\" as follows:\nUsage: /setname [NAME]",
@@ -551,18 +553,39 @@ public:
 
         if (Req.len == 0) return -1;
         if (Req.tokens.size() == 0) Req.tokens = parseToken(Req.raw);
-        
+
+        // defensive
+        if (Req.tokens.empty()) return -1;
 
         if (Req.tokens[0][0] != '/'){
-            //global message
+            // global message
             Req.receiver = metadata::onlineFds;
             appendChar("[GLOBAL] ", msg, len);
-            appendChar(metadata::fdNameMap[Req.sender].c_str(), msg, len);
+            {
+                auto it = metadata::fdNameMap.find(Req.sender);
+                if (it != metadata::fdNameMap.end()) appendChar(it->second.c_str(), msg, len);
+                else appendChar("unknown", msg, len);
+            }
             appendChar(": ", msg, len);
-            appendChar(Req.raw.data(), msg, len);
+
+            // append raw payload safely (use Req.len, not strlen on raw)
+            size_t copyLen = Req.len;
+            if (copyLen > PACKET_SIZE) copyLen = PACKET_SIZE;
+            if (len + copyLen > MSG_CAP) copyLen = MSG_CAP - len;
+            if (copyLen > 0) {
+                std::memcpy(msg + len, Req.raw.data(), copyLen);
+                len += (uint16_t)copyLen;
+            }
+
         } else {
-            //personal message
+            // personal message
             Req.receiver.insert(Req.sender);
+            if (Req.tokens.size() < 2){
+                appendChar("[SERVER] Incorrect personal message format.", msg, len);
+                server.sendPacket(Req.sender, msg, len);
+                return 0;
+            }
+
             auto recv = metadata::nameFdMap.find(Req.tokens[1]);
             if (recv == metadata::nameFdMap.end()){
                 appendChar("[SERVER] Cannot find user with that name.", msg, len);
@@ -575,23 +598,65 @@ public:
                 server.sendPacket(Req.sender, msg, len);
                 return 0;
             }
-            Req.receiver.insert(recv->second);
-            int redundant = Req.tokens[0].size() + Req.tokens[1].size() + 2;
-            char tmp_msg[1024];
-            std::memcpy(tmp_msg, msg + redundant, len);
 
+            Req.receiver.insert(recv->second);
+
+            // Build tmp_msg by joining tokens[2..] with spaces (safe, bounded)
+            char tmp_msg[BODY_CAP];
+            uint16_t tmp_len = 0;
+            if (Req.tokens.size() >= 3) {
+                for (size_t t = 2; t < Req.tokens.size(); ++t) {
+                    const std::string &part = Req.tokens[t];
+                    size_t need = part.size();
+                    // ensure space for part and a space
+                    if (need > (size_t)(BODY_CAP - tmp_len)) {
+                        need = BODY_CAP - tmp_len;
+                    }
+                    if (need > 0) {
+                        std::memcpy(tmp_msg + tmp_len, part.data(), need);
+                        tmp_len += (uint16_t)need;
+                    }
+                    // add a space if more tokens remain and room
+                    if (t + 1 < Req.tokens.size() && tmp_len < BODY_CAP) {
+                        tmp_msg[tmp_len++] = ' ';
+                    }
+                    if (tmp_len >= BODY_CAP) break;
+                }
+            } else {
+                // fallback: take up to BODY_CAP bytes from raw payload
+                size_t copyLen = Req.len;
+                if (copyLen > BODY_CAP) copyLen = BODY_CAP;
+                if (copyLen > 0) {
+                    std::memcpy(tmp_msg, Req.raw.data(), copyLen);
+                    tmp_len = (uint16_t)copyLen;
+                }
+            }
+            // ensure NUL-termination before passing to appendChar
+            if (tmp_len >= BODY_CAP) tmp_msg[BODY_CAP - 1] = '\0';
+            else tmp_msg[tmp_len] = '\0';
+
+            // Build custom personal message in bounded buffer
             char custom[PACKET_SIZE];
             uint16_t custom_len = 0;
             appendChar("[PERSONAL] ", custom, custom_len);
-            appendChar(metadata::fdNameMap[Req.sender].c_str(), custom, custom_len);
+            {
+                auto it = metadata::fdNameMap.find(Req.sender);
+                if (it != metadata::fdNameMap.end()) appendChar(it->second.c_str(), custom, custom_len);
+                else appendChar("unknown", custom, custom_len);
+            }
             appendChar(": ", custom, custom_len);
+            // tmp_msg is NUL-terminated -> safe to pass to appendChar
             appendChar(tmp_msg, custom, custom_len);
 
-            std::memcpy(msg, custom, custom_len);
-            len = strlen(msg);
+            // copy custom -> msg (bounded) and set len explicitly (do NOT call strlen on msg)
+            uint16_t to_copy = custom_len;
+            if (to_copy > MSG_CAP) to_copy = MSG_CAP;
+            std::memcpy(msg, custom, to_copy);
+            len = to_copy;
         }
-        
-        for (int i:Req.receiver){
+
+        // dispatch to receivers
+        for (int i: Req.receiver){
             server.sendPacket(i, msg, len);
         }
         return 0;
