@@ -110,7 +110,14 @@ namespace container {
         const size_t size;
         std::vector<T> queue;
         size_t head = 0, tail = 0;
+
     public:
+        int maxQueueSize = K;
+        void doubleInSize(){
+            maxQueueSize *= 2;
+            queue.resize(maxQueueSize);
+        }
+
         RingQueue(): size(K)
         {
             queue.resize(size + 1);
@@ -188,6 +195,9 @@ public:
     int feed(int sender, char* packet, uint16_t len){
         Buffer* buf;
         if (buffers[sender].empty()){
+            if (buffers[sender].full()){
+                buffers[sender].doubleInSize();
+            }
             buffers[sender].push_back(Buffer());
         }
         buf = &buffers[sender].back();
@@ -227,8 +237,11 @@ public:
                 tmp_len = 0;
                 container::Request req = container::Request(sender, buf->opcode, buf->raw, buf->len);
                 if (completedPackets.full()){
-                    std::cout << "PacketParser::feed: completedPackets queue is full. Dropping packet.\n";
-                } else completedPackets.push_back(req);
+                    std::cout << "PacketParser::feed: completedPackets queue is full. Doubling in size (" << completedPackets.maxQueueSize << "->";
+                    completedPackets.doubleInSize();
+                    std::cout << completedPackets.maxQueueSize <<").\n";
+                } 
+                completedPackets.push_back(req);
                 buffers[sender].pop_front();
 
                 if (i + 1 < len){
@@ -385,7 +398,11 @@ public:
         while (parser.canRetrieve()){
             container::Request tmp;
             parser.getRequest(tmp);
-            getQueue.push_back(tmp);
+            if (getQueue.full()){
+                std::cout << "Server::process: getQueue is full. Doubling in size (" << getQueue.maxQueueSize << "->";
+                getQueue.doubleInSize();
+                std::cout << getQueue.maxQueueSize << ").\n";
+            }
         }
 
         for (int i = 0; i < nfds; ++i){ 
@@ -475,7 +492,11 @@ public:
         ToSendMessage sending;
         sending.msg = msg;
         //std::cout << "Sending " << sending.msg << "...\n";
-        if (sendQueue[fd].full()) std::cout << "Server::sendPacket: send queue is full. Dropping packet.";
+        if (sendQueue[fd].full()){
+            std::cout << "Server::sendPacket: send queue is full. Doubling in size (" << sendQueue[fd].maxQueueSize << "->";
+            sendQueue[fd].doubleInSize();
+            std::cout << sendQueue[fd].maxQueueSize <<").\n";
+        }
         else sendQueue[fd].push_back(sending);
         epoll_event tmp_ev;
         tmp_ev.data.fd = fd;
@@ -485,7 +506,7 @@ public:
     }
 
     int dropClient(int fd){
-        std::cout << "Dropping client on fd number " << fd << " due to errors.\n";
+        std::cout << "Server::dropClient: Dropping client on fd number " << fd << " due to errors.\n";
         closeClient(fd);
         return 0;
     }
@@ -548,6 +569,7 @@ public:
             // global message
             Req.receiver = metadata::onlineFds;
             msg = "[GLOBAL] " + username + ": " + Req.raw;
+            std::cout << Req.raw << "\n";
         } else {
             // personal message
             Req.receiver.insert(Req.sender);
