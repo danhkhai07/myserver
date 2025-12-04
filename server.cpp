@@ -1,3 +1,4 @@
+#include <cerrno>
 #include <cstddef>
 #include <iterator>
 #include <netinet/in.h>
@@ -109,10 +110,10 @@ namespace container {
         ~Request() = default;
     };
 
-    template<typename T>
+    template<typename T, uint16_t K>
     struct RingQueue {
     private:
-        static const uint16_t size = 1024;
+        static const uint16_t size = K;
         T queue[size + 1];
         int head = 0, tail = 0;
     public:
@@ -181,8 +182,8 @@ private:
         }
     };
 
-    container::RingQueue<container::Request> completedPackets;
-    std::unordered_map<int, container::RingQueue<Buffer>> buffers;
+    container::RingQueue<container::Request, 8> completedPackets;
+    std::unordered_map<int, container::RingQueue<Buffer, 4>> buffers;
 
 public:
     int feed(int sender, char* packet, uint16_t len){
@@ -256,6 +257,8 @@ public:
 
 class Server {
 private:
+    const uint16_t MAX_READ_VOLUME = 4096;
+
     // TCP Parser var
     PacketParser parser;
 
@@ -273,8 +276,9 @@ private:
         uint16_t len = 0;
         char msg[PACKET_SIZE];
     };
-    container::RingQueue<container::Request> getQueue;
-    std::unordered_map<int, container::RingQueue<ToSendMessage>> sendQueue;
+    container::RingQueue<container::Request, 8> getQueue;
+    std::unordered_map<int, container::RingQueue<ToSendMessage, 8>> sendQueue;
+    container::RingQueue<int, MAX_CLIENTS> undrainedFds;
     
     int setNonBlocking(int fd) {
         int flags = fcntl(fd, F_GETFL, 0);
@@ -295,15 +299,47 @@ private:
         close(fd);
     }
 
-public:
-    Server():
-        clientCount(0),
-        serverFd(-1),
-        epfd(-1),
-        port(0)
-    {
-        // nothing else to do
+    bool handleEPOLLIN(int fd){
+        bool continueFlag = false;
+        bool drained = false;
+
+        char buffer[BUF_SIZE];
+        uint16_t totalRead = 0;
+
+        while (totalRead <= MAX_READ_VOLUME){
+            int bytes = read(fd, buffer, sizeof(buffer));
+            if (bytes > 0){
+                if (parser.feed(fd, buffer, bytes) < 0){
+                    std::cout << "Server::process: An error occur when feeding packets of client " << fd << ".\n";
+                    std::cout << "Server::process: Dropping client " << fd << ".\n";
+                    return true;
+                }
+                totalRead += bytes;
+                continue;
+            }
+
+            if (bytes == 0) {
+                closeClient(fd);
+                std::cout << "Server::process: Client at fd number " << fd << " disconnected.\n";
+                return true;
+            }
+
+            if (errno == EAGAIN){
+                drained = true;
+                break;
+            }
+
+            std::cout << "Server::process: Read error on fd " << fd << ". Closing client.\n";
+            closeClient(fd);
+            return true;
+        }
+        
+        if (!continueFlag && !drained){
+            undrainedFds.push_back(fd);
+        }
+        return continueFlag;
     }
+public:
     ~Server(){
         if (serverFd >= 0) close(serverFd);
         if (epfd >= 0) close(epfd);
@@ -361,40 +397,21 @@ public:
 
                 if (clientCount >= MAX_CLIENTS){
                     close(clientFd);
-                    std::cout << "IP " << clientIPv4 << " tried to connect but failed due to: (probably maxed capacity)\n";
+                    std::cout << "Server::process: IP " << clientIPv4 << " tried to connect but failed due to maxed capacity.\n";
                     continue;
                 }
                 
+                setNonBlocking(clientFd);
                 tmp_ev.events = EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR;
                 tmp_ev.data.fd = clientFd;
                 epoll_ctl(epfd, EPOLL_CTL_ADD, clientFd, &tmp_ev);
-                std::cout << "IP " << clientIPv4 << " connected through fd number " << clientFd << ".\n";
+                std::cout << "Server::process: IP " << clientIPv4 << " connected through fd number " << clientFd << ".\n";
                 addClient(clientFd);
                 continue;
             }
-            if (events[i].events & EPOLLIN){
-                char buffer[BUF_SIZE];
-                int bytes = read(fd, buffer, sizeof(buffer));
-                if (bytes <= 0) {
-                    if (bytes == 0) {
-                        // connection closed
-                        closeClient(fd);
-                        std::cout << "Client at fd number " << fd << " disconnected.\n";
-                    } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                        // real error
-                        std::cout << "Read error on fd " << fd << ". Closing client.\n";
-                        closeClient(fd);
-                    }
-                    continue;
-                }
 
-                int feedReturn;
-                if (bytes > 0) feedReturn = parser.feed(fd, buffer, bytes);
-                if (feedReturn < 0){
-                    std::cout << "Server::process: An error occur when feeding packets of client " << fd << ".\n";
-                    std::cout << "Server::process: Dropping client " << fd << ".\n";
-                    continue;
-                }
+            if (events[i].events & EPOLLIN){
+                if (handleEPOLLIN(fd)) continue;
             }
 
             if (events[i].events & EPOLLOUT){
@@ -415,16 +432,23 @@ public:
                         continue;
                     }
                     closeClient(fd);
-                    std::cout << "Client at fd number " << fd << " disconnected.\n";
+                    std::cout << "Server::process: Client at fd number " << fd << " disconnected.\n";
                 } else {
                     buffer->offset += sent;
                     if (buffer->offset >= buffer->len) sendQueue[fd].pop_front();
                 }
             }
+
             if (events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR)){
                 closeClient(fd);
-                std::cout << "Client at fd number " << fd << " disconnected.\n";
+                std::cout << "Server::process: Client at fd number " << fd << " disconnected.\n";
             }
+        }
+
+        for (int i = 0; i < undrainedFds.getSize(); i++){
+            int fd = undrainedFds.front();
+            undrainedFds.pop_front();
+            if (handleEPOLLIN(fd)) continue;
         }
 
         return 0;
@@ -633,7 +657,8 @@ public:
                         appendChar("\n", msg, len);
                     }
                 }
-                msg[len] = '\0'; // pop the last \n char
+                msg[len - 1] = '\0'; // pop the last \n char
+                len--;
                 break;
             }
             
