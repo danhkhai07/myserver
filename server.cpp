@@ -89,34 +89,33 @@ namespace container {
     struct Request {
         int sender = -1;
         uint8_t opcode = 0;
-        char raw[PACKET_SIZE];
+        std::string raw;
         uint16_t len = 0;
         std::vector<std::string> tokens;
         std::unordered_set<int> receiver;
         CommandCode code = CommandCode::NULL_CMD;
 
         Request() = default;
-        Request(int sndr, uint8_t op, char* rw, uint16_t ln):
-            sender(sndr), opcode(op), len(ln)
-        {
-            std::memcpy(raw, rw, ln);
-        }
-        Request(int sndr, char* rw, uint16_t ln, std::vector<std::string> tkns):
-            sender(sndr), len(ln), tokens(tkns)
-        {
-            std::memcpy(raw, rw, ln);
-        }
+        Request(int sndr, uint8_t op, std::string rw, uint16_t ln):
+            sender(sndr), opcode(op), raw(rw), len(ln) {}
+        Request(int sndr, std::string rw, uint16_t ln, std::vector<std::string> tkns):
+            sender(sndr), len(ln), raw(rw), tokens(tkns) {}
 
         ~Request() = default;
     };
 
-    template<typename T, uint16_t K>
+    template<typename T, size_t K>
     struct RingQueue {
     private:
-        static const uint16_t size = K;
-        T queue[size + 1];
-        int head = 0, tail = 0;
+        const size_t size;
+        std::vector<T> queue;
+        size_t head = 0, tail = 0;
     public:
+        RingQueue(): size(K)
+        {
+            queue.resize(size + 1);
+        }
+        
         bool empty(){
             return (head == tail);
         }
@@ -125,7 +124,7 @@ namespace container {
             return ((tail + 1) % (size + 1) == head);
         }
 
-        uint16_t getSize(){
+        size_t getSize(){
             return (tail - head + size + 1) % (size + 1);
         }
 T& front(){
@@ -174,15 +173,16 @@ private:
 
         uint8_t opParsed = 0;
         uint8_t opcode = 0;
-        char raw[PACKET_SIZE];
+        std::string raw;
 
+        Buffer() { raw.resize(PACKET_SIZE); }
         void reset(){
             *this = Buffer();
         }
     };
 
     container::RingQueue<container::Request, 1024> completedPackets;
-    std::unordered_map<int, container::RingQueue<Buffer, 64>> buffers;
+    std::unordered_map<int, container::RingQueue<Buffer, 1024>> buffers;
 
 public:
     int feed(int sender, char* packet, uint16_t len){
@@ -222,7 +222,7 @@ public:
 
             buf->raw[tmp_len] = c;
             tmp_len++;
-                
+               
             if (tmp_len >= buf->len){
                 tmp_len = 0;
                 container::Request req = container::Request(sender, buf->opcode, buf->raw, buf->len);
@@ -266,18 +266,19 @@ private:
     // Server shit
     int serverFd = -1;
     int epfd = -1;
-    uint16_t port = 0;
+    size_t port = 0;
     sockaddr_in serverAddr;
-    epoll_event events[MAX_CLIENTS + 1];
+    std::vector<epoll_event> events;
 
     // TCP queue shit
     struct ToSendMessage {
         int offset = 0;
         uint16_t len = 0;
-        char msg[PACKET_SIZE];
+        std::string msg;
     };
-    container::RingQueue<container::Request, 64> getQueue;
-    std::unordered_map<int, container::RingQueue<ToSendMessage, 64>> sendQueue;
+
+    container::RingQueue<container::Request, 1024> getQueue;
+    std::unordered_map<int, container::RingQueue<ToSendMessage, 1024>> sendQueue;
     container::RingQueue<int, MAX_CLIENTS> undrainedFds;
     
     int setNonBlocking(int fd) {
@@ -302,7 +303,7 @@ private:
         bool drained = false;
 
         char buffer[BUF_SIZE];
-        uint16_t totalRead = 0;
+        size_t totalRead = 0;
 
         while (totalRead <= MAX_READ_VOLUME){
             int bytes = read(fd, buffer, sizeof(buffer));
@@ -339,12 +340,15 @@ private:
         return continueFlag;
     }
 public:
+    Server(){
+        events.resize(MAX_CLIENTS + 1);
+    }
     ~Server(){
         if (serverFd >= 0) close(serverFd);
         if (epfd >= 0) close(epfd);
     }
 
-    int initialize(uint16_t p){
+    int initialize(size_t p){
         port = p;
         serverFd = socket(AF_INET, SOCK_STREAM, 0);
         if (serverFd < 0){
@@ -377,7 +381,7 @@ public:
 
     int process(){
         epoll_event tmp_ev;
-        int nfds = epoll_wait(epfd, events, MAX_CLIENTS + 1, 0);
+        int nfds = epoll_wait(epfd, events.data(), events.size(), 0);
 
         while (parser.canRetrieve()){
             container::Request tmp;
@@ -426,7 +430,7 @@ public:
 
                 ToSendMessage* buffer = &sendQueue[fd].front();
                 int messageSize = std::min((int) buffer->len - buffer->offset, BUF_SIZE);
-                int sent = send(fd, buffer->msg + buffer->offset, messageSize, 0);
+                int sent = send(fd, buffer->msg.c_str() + buffer->offset, messageSize, 0);
                 if (sent == -1) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) {
                         continue;
@@ -470,7 +474,7 @@ public:
     /// ONLY add the request to queue; the queue is processed in process(). 
     int sendPacket(int fd, char* msg, uint16_t len){
         ToSendMessage sending;
-        std::memcpy(sending.msg, msg, len);
+        sending.msg.assign(msg, len);
         sending.len = len;
         //std::cout << "Sending " << sending.msg << "...\n";
         if (sendQueue[fd].full()) std::cout << "Server::sendPacket: send queue is full. Dropping packet.";
@@ -555,7 +559,7 @@ public:
             appendChar("[GLOBAL] ", msg, len);
             appendChar(metadata::fdNameMap[Req.sender].c_str(), msg, len);
             appendChar(": ", msg, len);
-            appendChar(Req.raw, msg, len);
+            appendChar(Req.raw.data(), msg, len);
         } else {
             //personal message
             Req.receiver.insert(Req.sender);
@@ -629,6 +633,11 @@ public:
                             appendChar("[SERVER] Are you trippin'?", msg, len);
                         break;
                     }
+                }
+
+                if (Req.tokens[1].size() < 4 || Req.tokens[1].size() > 15){
+                    appendChar("[SERVER] Username is of invalid length.", msg, len);
+                    break;
                 }
 
                 metadata::addFdName(Req.sender, username.c_str(), username.size());
