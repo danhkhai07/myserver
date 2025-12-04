@@ -517,9 +517,11 @@ private:
                 }
             } else {
                 w[w_len] = c;
+                w[w_len + 1] = '\0';
                 w_len++;
             }
         }
+
         if (w_len > 0){
             res.push_back(w);
         }
@@ -616,9 +618,10 @@ public:
                     break;
                 }    
 
-                std::string newUsername = Req.tokens[1];
+                std::string username = Req.tokens[1];
+                std::cout << Req.tokens[1] << "\n";
                 {
-                    auto it = metadata::nameFdMap.find(newUsername);
+                    auto it = metadata::nameFdMap.find(username);
                     if (it != metadata::nameFdMap.end() ){ 
                         if (it->second != Req.sender)
                             appendChar("[SERVER] Username is already taken.", msg, len);
@@ -628,7 +631,7 @@ public:
                     }
                 }
 
-                metadata::addFdName(Req.sender, newUsername.c_str(), newUsername.size());
+                metadata::addFdName(Req.sender, username.c_str(), username.size());
                 appendChar("[SERVER] Username successfully set!", msg, len);
                 break;
             }
