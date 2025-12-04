@@ -128,8 +128,7 @@ namespace container {
         uint16_t getSize(){
             return (tail - head + size + 1) % (size + 1);
         }
-
-        T& front(){
+T& front(){
             return queue[head];
         }
 
@@ -263,7 +262,6 @@ private:
     PacketParser parser;
 
     // Server shit
-    uint32_t clientCount = 0;
     int serverFd = -1;
     int epfd = -1;
     uint16_t port = 0;
@@ -287,12 +285,10 @@ private:
     }
 
     void addClient(int fd){
-        clientCount++;
         metadata::onlineFds.insert(fd);
     }
 
     void closeClient(int fd){
-        clientCount--;
         sendQueue.erase(fd);
         metadata::removeFdName(fd);
         metadata::onlineFds.erase(fd);
@@ -395,12 +391,13 @@ public:
                 int clientFd = accept(serverFd, (sockaddr*)&clientAddr, &addrLen);
                 std::string clientIPv4 = inet_ntoa(clientAddr.sin_addr);
 
-                if (clientCount >= MAX_CLIENTS){
+                if (metadata::onlineFds.size() >= MAX_CLIENTS){
                     close(clientFd);
                     std::cout << "Server::process: IP " << clientIPv4 << " tried to connect but failed due to maxed capacity.\n";
                     continue;
                 }
                 
+                std::cout << "Count: " << metadata::onlineFds.size() << "\n";
                 setNonBlocking(clientFd);
                 tmp_ev.events = EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR;
                 tmp_ev.data.fd = clientFd;
@@ -619,7 +616,6 @@ public:
                 }    
 
                 std::string username = Req.tokens[1];
-                std::cout << Req.tokens[1] << "\n";
                 {
                     auto it = metadata::nameFdMap.find(username);
                     if (it != metadata::nameFdMap.end() ){ 
