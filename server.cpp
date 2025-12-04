@@ -21,9 +21,9 @@
 #include <unordered_map>
 #include <algorithm>
 
-#define MAX_CLIENTS 5
+#define MAX_CLIENTS 50000
 #define PACKET_SIZE 1024
-#define BUF_SIZE 128
+#define BUF_SIZE 1024
 
 namespace metadata {
     std::unordered_set<int> onlineFds;
@@ -33,7 +33,7 @@ namespace metadata {
     std::unordered_map<int, std::string> fdNameMap;
 
     int removeFdName(int fd){
-        if (!hasName[fd]) return 0;
+        if (!hasName.at(fd)) return 0;
         auto it = fdNameMap.find(fd);      
         if (it != fdNameMap.end()){
             nameFdMap.erase(it->second);
@@ -47,8 +47,8 @@ namespace metadata {
     }
 
     int addFdName(int fd, const char* name, uint16_t size){
-        if (hasName[fd]){ 
-            std::cout << "metadata::addFdName: Client " << fd << " already has a name by " << fdNameMap[fd] <<".\n";
+        if (hasName.at(fd)){ 
+            std::cout << "metadata::addFdName: Client " << fd << " already has a name by " << fdNameMap.at(fd) <<".\n";
             return -1;
         }
 
@@ -63,9 +63,9 @@ namespace metadata {
             return -1;
         }
 
-        fdNameMap[fd] = name;
-        nameFdMap[name] = fd;
-        hasName[fd] = true;
+        fdNameMap.at(fd) = name;
+        nameFdMap.at(name) = fd;
+        hasName.at(fd) = true;
         return 0;
     }
 }
@@ -181,8 +181,8 @@ private:
         }
     };
 
-    container::RingQueue<container::Request, 8> completedPackets;
-    std::unordered_map<int, container::RingQueue<Buffer, 4>> buffers;
+    container::RingQueue<container::Request, 1024> completedPackets;
+    std::unordered_map<int, container::RingQueue<Buffer, 64>> buffers;
 
 public:
     int feed(int sender, char* packet, uint16_t len){
@@ -226,7 +226,9 @@ public:
             if (tmp_len >= buf->len){
                 tmp_len = 0;
                 container::Request req = container::Request(sender, buf->opcode, buf->raw, buf->len);
-                completedPackets.push_back(req);
+                if (completedPackets.full()){
+                    std::cout << "PacketParser::feed: completedPackets queue is full. Dropping packet.\n";
+                } else completedPackets.push_back(req);
                 buffers[sender].pop_front();
 
                 if (i + 1 < len){
@@ -256,7 +258,7 @@ public:
 
 class Server {
 private:
-    const uint16_t MAX_READ_VOLUME = 4096;
+    const uint16_t MAX_READ_VOLUME = 1024;
 
     // TCP Parser var
     PacketParser parser;
@@ -274,8 +276,8 @@ private:
         uint16_t len = 0;
         char msg[PACKET_SIZE];
     };
-    container::RingQueue<container::Request, 8> getQueue;
-    std::unordered_map<int, container::RingQueue<ToSendMessage, 8>> sendQueue;
+    container::RingQueue<container::Request, 64> getQueue;
+    std::unordered_map<int, container::RingQueue<ToSendMessage, 64>> sendQueue;
     container::RingQueue<int, MAX_CLIENTS> undrainedFds;
     
     int setNonBlocking(int fd) {
@@ -332,6 +334,7 @@ private:
         
         if (!continueFlag && !drained){
             undrainedFds.push_back(fd);
+            std::cout << "Pending undrained fds: " << undrainedFds.getSize() << "\n";
         }
         return continueFlag;
     }
@@ -397,7 +400,7 @@ public:
                     continue;
                 }
                 
-                std::cout << "Count: " << metadata::onlineFds.size() << "\n";
+                std::cout << "Client count: " << metadata::onlineFds.size() << "\n";
                 setNonBlocking(clientFd);
                 tmp_ev.events = EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR;
                 tmp_ev.data.fd = clientFd;
@@ -445,7 +448,7 @@ public:
         for (int i = 0; i < undrainedFds.getSize(); i++){
             int fd = undrainedFds.front();
             undrainedFds.pop_front();
-            if (handleEPOLLIN(fd)) continue;
+            handleEPOLLIN(fd);
         }
 
         return 0;
@@ -470,7 +473,8 @@ public:
         std::memcpy(sending.msg, msg, len);
         sending.len = len;
         //std::cout << "Sending " << sending.msg << "...\n";
-        sendQueue[fd].push_back(sending);
+        if (sendQueue[fd].full()) std::cout << "Server::sendPacket: send queue is full. Dropping packet.";
+        else sendQueue[fd].push_back(sending);
         epoll_event tmp_ev;
         tmp_ev.data.fd = fd;
         tmp_ev.events = EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR | EPOLLOUT;
@@ -532,7 +536,7 @@ public:
         uint16_t len = 0;
 
         //refuse to let unnamed users send messages
-        if (!metadata::hasName[Req.sender]){
+        if (!metadata::hasName.at(Req.sender)){
             appendChar(
                 "[SERVER] Cannot send messages while unnamed. To name yourself, use command \"/setname\" as follows:\nUsage: /setname [NAME]",
                 msg, len);
@@ -549,7 +553,7 @@ public:
             //global message
             Req.receiver = metadata::onlineFds;
             appendChar("[GLOBAL] ", msg, len);
-            appendChar(metadata::fdNameMap[Req.sender].c_str(), msg, len);
+            appendChar(metadata::fdNameMap.at(Req.sender).c_str(), msg, len);
             appendChar(": ", msg, len);
             appendChar(Req.raw, msg, len);
         } else {
@@ -575,7 +579,7 @@ public:
             char custom[PACKET_SIZE];
             uint16_t custom_len = 0;
             appendChar("[PERSONAL] ", custom, custom_len);
-            appendChar(metadata::fdNameMap[Req.sender].c_str(), custom, custom_len);
+            appendChar(metadata::fdNameMap.at(Req.sender).c_str(), custom, custom_len);
             appendChar(": ", custom, custom_len);
             appendChar(tmp_msg, custom, custom_len);
 
@@ -610,7 +614,7 @@ public:
                     break;
                 }
 
-                if (metadata::hasName[Req.sender]){
+                if (metadata::hasName.at(Req.sender)){
                     appendChar("[SERVER] Your name has already been set!", msg, len);
                     break;
                 }    
@@ -650,9 +654,9 @@ public:
 
                 appendChar("[SERVER] Active list:\n", msg, len);
                 for (int i:metadata::onlineFds){
-                    if (metadata::hasName[i]){
+                    if (metadata::hasName.at(i)){
                         appendChar("\t", msg, len);
-                        appendChar(metadata::fdNameMap[i].c_str(), msg, len);
+                        appendChar(metadata::fdNameMap.at(i).c_str(), msg, len);
                         appendChar("\n", msg, len);
                     }
                 }
