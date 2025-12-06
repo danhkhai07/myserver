@@ -107,15 +107,14 @@ namespace container {
     template<typename T, size_t K>
     struct RingQueue {
     private:
-        const size_t size;
         std::vector<T> queue;
         size_t head = 0, tail = 0;
 
     public:
-        int maxQueueSize = K;
+        size_t size;
         void doubleInSize(){
-            maxQueueSize *= 2;
-            queue.resize(maxQueueSize);
+            size *= 2;
+            queue.resize(size + 1);
         }
 
         RingQueue(): size(K)
@@ -237,9 +236,9 @@ public:
                 tmp_len = 0;
                 container::Request req = container::Request(sender, buf->opcode, buf->raw, buf->len);
                 if (completedPackets.full()){
-                    std::cout << "PacketParser::feed: completedPackets queue is full. Doubling in size (" << completedPackets.maxQueueSize << "->";
+                    std::cout << "PacketParser::feed: completedPackets queue is full. Doubling in size (" << completedPackets.size << "->";
                     completedPackets.doubleInSize();
-                    std::cout << completedPackets.maxQueueSize <<").\n";
+                    std::cout << completedPackets.size <<").\n";
                 } 
                 completedPackets.push_back(req);
                 buffers[sender].pop_front();
@@ -399,9 +398,9 @@ public:
             container::Request tmp;
             parser.getRequest(tmp);
             if (getQueue.full()){
-                std::cout << "Server::process: getQueue is full. Doubling in size (" << getQueue.maxQueueSize << "->";
+                std::cout << "Server::process: getQueue is full. Doubling in size (" << getQueue.size << "->";
                 getQueue.doubleInSize();
-                std::cout << getQueue.maxQueueSize << ").\n";
+                std::cout << getQueue.size << ").\n";
             }
         }
 
@@ -493,9 +492,9 @@ public:
         sending.msg = msg;
         //std::cout << "Sending " << sending.msg << "...\n";
         if (sendQueue[fd].full()){
-            std::cout << "Server::sendPacket: send queue is full. Doubling in size (" << sendQueue[fd].maxQueueSize << "->";
+            std::cout << "Server::sendPacket: send queue is full. Doubling in size (" << sendQueue[fd].size << "->";
             sendQueue[fd].doubleInSize();
-            std::cout << sendQueue[fd].maxQueueSize <<").\n";
+            std::cout << sendQueue[fd].size <<").\n";
         }
         else sendQueue[fd].push_back(sending);
         epoll_event tmp_ev;
