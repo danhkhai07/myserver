@@ -107,15 +107,10 @@ namespace container {
     template<typename T, size_t K>
     struct RingQueue {
     private:
+        size_t size;
         std::vector<T> queue;
         size_t head = 0, tail = 0;
-
     public:
-        size_t size;
-        void doubleInSize(){
-            size *= 2;
-            queue.resize(size + 1);
-        }
 
         RingQueue(): size(K)
         {
@@ -187,15 +182,19 @@ private:
         }
     };
 
-    container::RingQueue<container::Request, 1024> completedPackets;
-    std::unordered_map<int, container::RingQueue<Buffer, 1024>> buffers;
+    container::RingQueue<container::Request, 4096> completedPackets;
+    std::vector<container::RingQueue<Buffer, 1024>> buffers;
 
 public:
+    PacketParser() {
+        buffers.resize(MAX_CLIENTS + 1);
+    }
+
     int feed(int sender, char* packet, uint16_t len){
         Buffer* buf;
         if (buffers[sender].empty()){
             if (buffers[sender].full()){
-                buffers[sender].doubleInSize();
+                return -1;
             }
             buffers[sender].push_back(Buffer());
         }
@@ -236,9 +235,7 @@ public:
                 tmp_len = 0;
                 container::Request req = container::Request(sender, buf->opcode, buf->raw, buf->len);
                 if (completedPackets.full()){
-                    std::cout << "PacketParser::feed: completedPackets queue is full. Doubling in size (" << completedPackets.size << "->";
-                    completedPackets.doubleInSize();
-                    std::cout << completedPackets.size <<").\n";
+                    return -1;
                 } 
                 completedPackets.push_back(req);
                 buffers[sender].pop_front();
@@ -346,7 +343,6 @@ private:
         
         if (!continueFlag && !drained){
             undrainedFds.push_back(fd);
-            std::cout << "Pending undrained fds: " << undrainedFds.getSize() << "\n";
         }
         return continueFlag;
     }
@@ -398,10 +394,9 @@ public:
             container::Request tmp;
             parser.getRequest(tmp);
             if (getQueue.full()){
-                std::cout << "Server::process: getQueue is full. Doubling in size (" << getQueue.size << "->";
-                getQueue.doubleInSize();
-                std::cout << getQueue.size << ").\n";
+                return -1;
             }
+            getQueue.push_back(tmp);
         }
 
         for (int i = 0; i < nfds; ++i){ 
@@ -492,11 +487,9 @@ public:
         sending.msg = msg;
         //std::cout << "Sending " << sending.msg << "...\n";
         if (sendQueue[fd].full()){
-            std::cout << "Server::sendPacket: send queue is full. Doubling in size (" << sendQueue[fd].size << "->";
-            sendQueue[fd].doubleInSize();
-            std::cout << sendQueue[fd].size <<").\n";
+            return -1;
         }
-        else sendQueue[fd].push_back(sending);
+        sendQueue[fd].push_back(sending);
         epoll_event tmp_ev;
         tmp_ev.data.fd = fd;
         tmp_ev.events = EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR | EPOLLOUT;
